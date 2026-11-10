@@ -297,3 +297,42 @@ func mustSubmit(t *testing.T, spec *corev1.PodSpec, id Identity, opts SubmitOpti
 func jsonUnmarshalString(s string, v any) error {
 	return json.Unmarshal([]byte(s), v)
 }
+
+func TestOracleOnFailureRetriesParse(t *testing.T) {
+	spec := goodPod()
+	spec.RestartPolicy = corev1.RestartPolicyOnFailure
+
+	ad := dryRun(t, mustSubmit(t, spec, Identity{Name: "p", Namespace: "n"},
+		SubmitOptions{Caps: DefaultCapabilities(), MaxRetries: 3}))
+
+	// max_retries is sugar: condor_submit expands it into the retry
+	// bookkeeping attributes, so assert on what it actually produced
+	// rather than on the keyword surviving.
+	assert.Equal(t, "3", ad["jobmaxretries"])
+	assert.Equal(t, "0", ad["jobsuccessexitcode"])
+	assert.NotEmpty(t, ad["onexitremove"], "max_retries must have produced the retry policy expressions")
+}
+
+func TestOracleSuspendSubmitsOnHold(t *testing.T) {
+	ad := dryRun(t, mustSubmit(t, goodPod(), Identity{Name: "p", Namespace: "n"},
+		SubmitOptions{Caps: DefaultCapabilities(), Suspend: true}))
+
+	assert.Equal(t, strconv.Itoa(JobStatusHeld), ad["jobstatus"],
+		"a suspended Job must land in the queue held, not idle")
+}
+
+// Kubernetes names are tame, but labels and annotations are not: they carry
+// arbitrary user text into a ClassAd string literal. If the escaping is wrong
+// the submit file does not parse, or worse, parses into something else.
+func TestOracleHostileTextSurvivesEscaping(t *testing.T) {
+	hostile := `quote" backslash\ newline` + "\n" + `tab	end`
+	id := Identity{
+		Name: "p", Namespace: "n",
+		Annotations: map[string]string{"note": hostile},
+	}
+	ad := dryRun(t, mustSubmit(t, goodPod(), id, SubmitOptions{Caps: DefaultCapabilities()}))
+
+	var back map[string]string
+	require.NoError(t, jsonUnmarshalString(adString(t, ad, AttrAnnotations), &back))
+	assert.Equal(t, hostile, back["note"])
+}
