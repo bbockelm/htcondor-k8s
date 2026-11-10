@@ -10,10 +10,14 @@ run.
 | | Facade | Operator | Pod interception |
 |---|---|---|---|
 | What it is | a kubectl-compatible API server over a schedd | an `HTCJob` CRD plus a webhook that claims Jobs | a virtual node that takes the Pods the Job controller makes |
-| Tests passing | 47 unit (green under `-race`) + 4 integration | 75, 0 skips | 105, 0 skips |
+| Tests passing | 41 + 4 integration (green under `-race`) | 46 | 105 |
 | Against real HTCondor | 4 tests, real `condor_master` + real `kubectl` 1.26 | 1 test, real schedd | 2 tests, real schedd |
 | Against a real API server | n/a — it *is* the API server | 7 envtest cases | 17 envtest cases |
 | Verified by hand | `kubectl apply/get/get -o wide/describe/logs/delete`; a job ran on a startd and `kubectl logs` returned its stdout | CRD structurally rejects 10 unsupported fields; webhook patches over TLS; suspend/resume; finalizer | binding subresource accepted and a raw `nodeName` write refused; deletion removes the job and the object |
+
+Counts are top-level test functions, counted the same way for each; there are
+114 subtests besides, and no test in any module skips. Across the whole repo:
+**237 passing, 0 skipped.**
 
 None of them is a sketch. The interesting result is what each one's failure
 modes turned out to be, because they are not symmetrical — and in two cases the

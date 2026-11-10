@@ -50,7 +50,7 @@ that needs both should run both.
 
 ## Status
 
-Built and tested: 105 tests pass across the module, 0 skips. The node lifecycle
+Built and tested: 105 top-level tests pass across the module, 0 skips. The node lifecycle
 and the pod controller are tested against a real `kube-apiserver` via envtest,
 and submission against a real schedd.
 
