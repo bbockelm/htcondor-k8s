@@ -1,0 +1,36 @@
+# A hand-written HTCJob. Nothing had to create a batch/v1 Job for this to run:
+# the CRD is a first-class way to submit, and the Job claiming path is a
+# convenience on top of it.
+apiVersion: htcondor.org/v1alpha1
+kind: HTCJob
+metadata:
+  name: sleepy
+  namespace: default
+spec:
+  completions: 4
+  completionMode: Indexed
+  backoffLimit: 2
+  template:
+    labels:
+      app: sleepy
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+        - name: scratch
+          emptyDir: {}
+      container:
+        name: work
+        image: docker://busybox:latest
+        command: ["/bin/sh", "-c"]
+        args: ["echo index $JOB_COMPLETION_INDEX; sleep 30"]
+        env:
+          - name: MODE
+            value: demo
+        volumeMounts:
+          - name: scratch
+            mountPath: /scratch
+        resources:
+          requests:
+            cpu: "1"
+            memory: 512Mi
+            ephemeral-storage: 2Gi

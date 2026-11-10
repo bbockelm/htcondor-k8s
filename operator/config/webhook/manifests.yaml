@@ -1,0 +1,56 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: htcondor-k8s-job-claimer
+webhooks:
+  - name: jobs.htcondor.org
+    # Ignore is load-bearing, not a convenience. This webhook sits on the
+    # CREATE path of every Job in the cluster, and an operator that is down,
+    # slow or mis-certificated must not stop Kubernetes from running the Jobs
+    # it has always run. The cost of failing open is that some Jobs go to the
+    # default scheduler that HTCondor could have taken; the cost of failing
+    # closed is an outage of batch workloads cluster-wide.
+    failurePolicy: Ignore
+    # The handler is pure: it reads the Job, decides, and returns a patch. It
+    # creates nothing and calls nothing, which is what lets it declare None
+    # and keeps dry-run honest.
+    sideEffects: None
+    # Short, because it is synchronous on every Job create. Everything that
+    # could block -- talking to a schedd, writing an HTCJob -- is in the
+    # controller instead.
+    timeoutSeconds: 5
+    # The claim is idempotent, but there is no reason to run twice: nothing
+    # another webhook does downstream can turn an unclaimable Job into a
+    # claimable one.
+    reinvocationPolicy: Never
+    matchPolicy: Equivalent
+    admissionReviewVersions: ["v1"]
+    rules:
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        # jobs only, never jobs/status: the operator writes Job status itself,
+        # and matching the subresource would make it re-enter its own webhook
+        # on every status poll.
+        resources: ["jobs"]
+        operations: ["CREATE", "UPDATE"]
+        scope: "Namespaced"
+    # Never look at the control plane's own namespaces. A cluster whose
+    # control plane runs as Jobs is not a cluster this should experiment on.
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["kube-system", "kube-node-lease", "htcondor-system"]
+        # Uncomment to make claiming opt-in per namespace, which is the right
+        # default for a shared cluster: a Job silently moving to a different
+        # compute pool is a surprise, and the blast radius of a bad
+        # Capabilities profile is then one namespace rather than all of them.
+        # - key: htcondor.org/claim-jobs
+        #   operator: In
+        #   values: ["true"]
+    clientConfig:
+      service:
+        name: htcondor-k8s-webhook
+        namespace: htcondor-system
+        path: /mutate-batch-v1-job
+        port: 443

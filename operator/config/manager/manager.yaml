@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: htcondor-operator
+  namespace: htcondor-system
+  labels:
+    app: htcondor-operator
+spec:
+  # One replica without leader election, or several with it. Two writers
+  # racing to submit the same HTCJob would each run the owner-UID query
+  # first, so the worst case is a duplicate submission in the window
+  # between one controller's query and its commit -- narrow, but real.
+  # Leader election closes it; -leader-elect is how.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: htcondor-operator
+  template:
+    metadata:
+      labels:
+        app: htcondor-operator
+    spec:
+      serviceAccountName: htcondor-operator
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: manager
+          image: htcondor-k8s/operator:latest
+          args:
+            - -schedd-address=$(HTCONDOR_SCHEDD_ADDRESS)
+            - -schedd-name=$(HTCONDOR_SCHEDD_NAME)
+            - -leader-elect
+            # Off by default in a real cluster: kube-controller-manager
+            # owns a Job's status and recomputes it from Pods, of which a
+            # claimed Job has none, so the two writers fight. The HTCJob
+            # is the authoritative status.
+            - -mirror-job-status=false
+          env:
+            - name: HTCONDOR_SCHEDD_ADDRESS
+              valueFrom:
+                configMapKeyRef: { name: htcondor-pool, key: scheddAddress }
+            - name: HTCONDOR_SCHEDD_NAME
+              valueFrom:
+                configMapKeyRef: { name: htcondor-pool, key: scheddName }
+          ports:
+            - name: webhook
+              containerPort: 9443
+          volumeMounts:
+            - name: serving-certs
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+              readOnly: true
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8081 }
+            initialDelaySeconds: 15
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8081 }
+            initialDelaySeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+      volumes:
+        - name: serving-certs
+          secret:
+            # Supplied by cert-manager, or by any other means of getting a
+            # serving certificate for htcondor-k8s-webhook.htcondor-system.svc
+            # whose CA is injected into the MutatingWebhookConfiguration.
+            secretName: htcondor-k8s-webhook-cert

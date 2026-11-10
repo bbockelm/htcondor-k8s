@@ -1,0 +1,27 @@
+# An ordinary batch/v1 Job. If the webhook is installed and the pool profile
+# admits it, applying this stamps htcondor.org/claimed on it, sets
+# schedulerName: htcondor, suspends it so no Pods are created, and an HTCJob
+# of the same name appears beside it.
+#
+# If anything here stopped being translatable -- add a second container, a PVC,
+# a toleration -- the same apply would produce an ordinary Job on the default
+# scheduler, with no error and no HTCJob.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: claimable
+  namespace: default
+spec:
+  completions: 2
+  parallelism: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: work
+          image: docker://busybox:latest
+          command: ["/bin/sh", "-c", "echo hello from HTCondor"]
+          resources:
+            requests:
+              cpu: "1"
+              memory: 256Mi

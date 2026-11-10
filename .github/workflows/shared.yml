@@ -1,0 +1,59 @@
+# CI for the shared translation contract.
+#
+# The oracle and fuzz tests need a real condor_submit and skip themselves
+# without one, so they are run in a job that installs HTCondor rather than
+# being allowed to silently vanish from the default job.
+name: shared
+
+on:
+  push:
+    paths: ["shared/**", ".github/workflows/shared.yml"]
+  pull_request:
+    paths: ["shared/**", ".github/workflows/shared.yml"]
+
+env:
+  GOWORK: "off"
+  GOFLAGS: "-mod=mod"
+  GOPRIVATE: "github.com/bbockelm,github.com/PelicanPlatform"
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: shared
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - run: go build ./...
+      - run: go vet ./...
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go test ./... -count=1
+
+  oracle:
+    # Checks the generated submit files against real condor_submit. Without
+    # this job the oracle tests skip and the suite is green for the wrong
+    # reason, so it asserts on a named test having run.
+    runs-on: ubuntu-latest
+    container: htcondor/mini:latest
+    defaults:
+      run:
+        working-directory: shared
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: submit-language oracle
+        run: |
+          set -o pipefail
+          go test ./translate/ -count=1 -run 'TestOracle' -v | tee oracle.log
+          grep -q -- '--- PASS: TestOracleMinimalPodProducesAContainerJob' oracle.log
+          grep -q -- '--- PASS: TestOracleUserTextCannotExpandSubmitMacros' oracle.log
+      - name: fuzz the submit quoting
+        run: |
+          go test ./translate/ -run XXX -fuzz FuzzArgumentRoundTrip -fuzztime 120s
+          go test ./translate/ -run XXX -fuzz FuzzEnvironmentRoundTrip -fuzztime 60s

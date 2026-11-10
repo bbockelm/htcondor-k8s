@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: htcondor-system
+  labels:
+    # The webhook's own namespaceSelector excludes this name, so the
+    # operator cannot claim Jobs it or its neighbours create. Without that
+    # exclusion an operator deployed as a Job would be able to claim itself.
+    kubernetes.io/metadata.name: htcondor-system

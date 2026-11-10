@@ -1,0 +1,469 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: htcjobs.htcondor.org
+spec:
+  group: htcondor.org
+  names:
+    kind: HTCJob
+    listKind: HTCJobList
+    plural: htcjobs
+    shortNames:
+    - htcj
+    singular: htcjob
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.clusterID
+      name: Cluster
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.active
+      name: Active
+      type: integer
+    - jsonPath: .status.succeeded
+      name: Succeeded
+      type: integer
+    - jsonPath: .status.failed
+      name: Failed
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: HTCJob is one HTCondor cluster expressed as a Kubernetes object.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              HTCJobSpec is the subset of batch/v1 JobSpec that an HTCondor pool can run
+              faithfully.
+
+              It is written out longhand rather than embedding batchv1.JobSpec on purpose.
+              Embedding would accept `podFailurePolicy`, `tolerations`, `initContainers`
+              and the rest into etcd and leave a controller to explain at runtime that it
+              ignored them. Here they are not fields, so the API server's own structural
+              schema rejects them at `kubectl apply` time with a field-level error, and no
+              object ever exists that promises something the pool will not do.
+            properties:
+              activeDeadlineSeconds:
+                description: ActiveDeadlineSeconds becomes a periodic_remove on wall-clock
+                  runtime.
+                format: int64
+                minimum: 1
+                type: integer
+              backoffLimit:
+                description: |-
+                  BackoffLimit becomes max_retries. It is honored only when the
+                  template's restartPolicy is OnFailure.
+                format: int32
+                minimum: 0
+                type: integer
+              completionMode:
+                default: NonIndexed
+                description: CompletionMode Indexed exports JOB_COMPLETION_INDEX to
+                  each proc.
+                enum:
+                - NonIndexed
+                - Indexed
+                type: string
+              completions:
+                default: 1
+                description: |-
+                  Completions is the number of procs to queue in the HTCondor cluster.
+                  Unlike batch/v1 there is no Parallelism: HTCondor starts every idle
+                  proc as soon as a slot matches, and throttling would mean the
+                  controller holding and releasing procs by hand.
+                format: int32
+                minimum: 1
+                type: integer
+              suspend:
+                description: |-
+                  Suspend true means the procs are held. Flipping it releases them; the
+                  job keeps its cluster id and its place in the queue either way, which
+                  is the one place HTCondor's model is strictly nicer than deleting and
+                  recreating Pods.
+                type: boolean
+              template:
+                description: Template is the single container and its environment.
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    type: object
+                  labels:
+                    additionalProperties:
+                      type: string
+                    type: object
+                  spec:
+                    description: HTCPodSpec is the executable shape of an HTCondor
+                      job.
+                    properties:
+                      container:
+                        description: |-
+                          Container is singular. A Pod's containers share a network namespace
+                          and a lifecycle; an HTCondor job is one process tree on one slot, so
+                          a list here would be a list that may only ever hold one element.
+                        properties:
+                          args:
+                            items:
+                              type: string
+                            type: array
+                          command:
+                            description: |-
+                              Command is required, not optional as in a Pod: resolving an image's
+                              own entrypoint would mean pulling its manifest at admission time, and
+                              a job that runs the wrong thing is worse than one that is refused.
+                            items:
+                              type: string
+                            minItems: 1
+                            type: array
+                          env:
+                            description: |-
+                              Env holds literal values only. There is no ValueFrom: a job runs on a
+                              machine with no API server to read a Secret or a field reference from.
+                            items:
+                              description: HTCEnvVar is a literal environment entry.
+                              properties:
+                                name:
+                                  minLength: 1
+                                  type: string
+                                value:
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            type: array
+                          image:
+                            description: |-
+                              Image is passed to container_image. A bare name is a Docker
+                              reference; docker:// and the various osdf/apptainer forms work too.
+                            minLength: 1
+                            type: string
+                          name:
+                            minLength: 1
+                            type: string
+                          resources:
+                            description: |-
+                              Resources uses the Kubernetes types because the quantity parsing and
+                              the requests/limits distinction both translate exactly. cpu and
+                              memory are required; ephemeral-storage defaults; anything else must
+                              be a GPU resource the pool advertises.
+                            properties:
+                              claims:
+                                description: |-
+                                  Claims lists the names of resources, defined in spec.resourceClaims,
+                                  that are used by this container.
+
+                                  This field depends on the
+                                  DynamicResourceAllocation feature gate.
+
+                                  This field is immutable. It can only be set for containers.
+                                items:
+                                  description: ResourceClaim references one entry
+                                    in PodSpec.ResourceClaims.
+                                  properties:
+                                    name:
+                                      description: |-
+                                        Name must match the name of one entry in pod.spec.resourceClaims of
+                                        the Pod where this field is used. It makes that resource available
+                                        inside a container.
+                                      type: string
+                                    request:
+                                      description: |-
+                                        Request is the name chosen for a request in the referenced claim.
+                                        If empty, everything from the claim is made available, otherwise
+                                        only the result of this request.
+                                      type: string
+                                  required:
+                                  - name
+                                  type: object
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - name
+                                x-kubernetes-list-type: map
+                              limits:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: |-
+                                  Limits describes the maximum amount of compute resources allowed.
+                                  More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                                type: object
+                              requests:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: |-
+                                  Requests describes the minimum amount of compute resources required.
+                                  If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                                  otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                                  More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                                type: object
+                            type: object
+                          volumeMounts:
+                            items:
+                              description: |-
+                                HTCVolumeMount binds a volume into the container. There is no SubPath and no
+                                MountPropagation.
+                              properties:
+                                mountPath:
+                                  minLength: 1
+                                  type: string
+                                name:
+                                  minLength: 1
+                                  type: string
+                                readOnly:
+                                  type: boolean
+                              required:
+                              - mountPath
+                              - name
+                              type: object
+                            type: array
+                          workingDir:
+                            type: string
+                        required:
+                        - command
+                        - image
+                        - name
+                        type: object
+                      nodeSelector:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          NodeSelector keys must be ones the pool has been configured to
+                          express as a machine ClassAd attribute; an unknown key is rejected at
+                          admission rather than dropped.
+                        type: object
+                      restartPolicy:
+                        default: Never
+                        description: |-
+                          RestartPolicy Never leaves a failed job failed; OnFailure lets
+                          BackoffLimit retry it.
+                        enum:
+                        - Never
+                        - OnFailure
+                        type: string
+                      volumes:
+                        description: |-
+                          Volumes may only be emptyDir, which becomes a subdirectory of the job
+                          scratch directory. The field is a list of the one supported source,
+                          not a VolumeSource union with every type the kubelet knows.
+                        items:
+                          description: HTCVolume is a scratch directory. Name is the
+                            handle a mount refers to.
+                          properties:
+                            emptyDir:
+                              description: |-
+                                EmptyDir must be present; it is the only source there is. It is a
+                                struct rather than a bare bool so that a future SizeLimit does not
+                                change the field's type.
+                              properties:
+                                sizeLimitBytes:
+                                  description: SizeLimit is advisory today and is
+                                    added to request_disk.
+                                  format: int64
+                                  type: integer
+                              type: object
+                            name:
+                              minLength: 1
+                              type: string
+                          required:
+                          - emptyDir
+                          - name
+                          type: object
+                        type: array
+                    required:
+                    - container
+                    type: object
+                required:
+                - spec
+                type: object
+            required:
+            - template
+            type: object
+          status:
+            description: HTCJobStatus is what the controller knows about the job queue.
+            properties:
+              active:
+                description: |-
+                  Active, Succeeded and Failed are proc counts, in the same sense as a
+                  batch/v1 JobStatus, so they can be mirrored onto the owning Job.
+                format: int32
+                type: integer
+              clusterID:
+                description: |-
+                  ClusterID is the HTCondor cluster. Its presence is the record that a
+                  submission happened; the controller will not submit again while it is
+                  set, and reconstructs it by querying on the owner UID when a crash
+                  lost the status write.
+                type: string
+              completionTime:
+                format: date-time
+                type: string
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              failed:
+                format: int32
+                type: integer
+              lastQueueSync:
+                description: |-
+                  LastQueueSync is when the job ads behind this status were read. A
+                  status with an old LastQueueSync is stale, not wrong, and the
+                  difference matters when the schedd has been unreachable.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the .metadata.generation the rest of this
+                  status was computed from.
+                format: int64
+                type: integer
+              phase:
+                description: HTCJobPhase is a coarse summary for `kubectl get`.
+                type: string
+              procs:
+                description: |-
+                  Procs is the per-proc detail. It is capped by the CRD so that a
+                  100k-completion job cannot turn one CR into an object too large for
+                  etcd; past the cap only the counts above are maintained.
+                items:
+                  description: HTCProcStatus is one proc of the cluster, named the
+                    way condor_q names it.
+                  properties:
+                    completionTime:
+                      format: date-time
+                      type: string
+                    exitCode:
+                      format: int32
+                      type: integer
+                    holdReason:
+                      type: string
+                    index:
+                      description: Index is the completion index for an Indexed job,
+                        or nil.
+                      format: int32
+                      type: integer
+                    jobStatus:
+                      description: |-
+                        JobStatus is the raw HTCondor status code (1 idle, 2 running, 5 held,
+                        ...). It is reported unmapped alongside Phase because the mapping is
+                        lossy -- a held job is neither Pending nor Failed -- and an operator
+                        debugging a pool wants the number condor_q showed them.
+                      format: int32
+                      type: integer
+                    phase:
+                      description: Phase is the Kubernetes reading of JobStatus.
+                      type: string
+                    procID:
+                      format: int32
+                      type: integer
+                    remoteHost:
+                      type: string
+                    startTime:
+                      format: date-time
+                      type: string
+                  required:
+                  - jobStatus
+                  - procID
+                  type: object
+                maxItems: 256
+                type: array
+              startTime:
+                format: date-time
+                type: string
+              succeeded:
+                format: int32
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
