@@ -20,6 +20,7 @@ import (
 
 	"github.com/bbockelm/htcondor-k8s/shared/translate"
 	"github.com/bbockelm/htcondor-k8s/virtualnode/api"
+	"github.com/bbockelm/htcondor-k8s/virtualnode/internal/webhook"
 )
 
 // --- harness ------------------------------------------------------------
@@ -150,12 +151,9 @@ func newPod(name string, uid types.UID) *corev1.Pod {
 		Spec: corev1.PodSpec{
 			SchedulerName: api.SchedulerName,
 			RestartPolicy: corev1.RestartPolicyNever,
-			Tolerations: []corev1.Toleration{{
-				Key:      api.TaintKey,
-				Operator: corev1.TolerationOpEqual,
-				Value:    api.TaintValue,
-				Effect:   corev1.TaintEffectNoSchedule,
-			}},
+			// What the webhook stamps: the virtual node's taint plus
+			// the not-ready/unreachable pair.
+			Tolerations: webhook.Tolerations(),
 			Containers: []corev1.Container{{
 				Name:    "work",
 				Image:   "docker://busybox:latest",
@@ -483,7 +481,8 @@ func TestNormalizeRemovesOnlyWhatWeAdded(t *testing.T) {
 
 	spec := normalizeForAdmission(pod, api.NodeName)
 	require.Empty(t, spec.NodeName)
-	require.Equal(t, []corev1.Toleration{{Key: "spot"}}, spec.Tolerations)
+	require.Equal(t, []corev1.Toleration{{Key: "spot"}}, spec.Tolerations,
+		"every toleration the webhook adds must come back off, and only those")
 
 	// Which is what makes the round trip work: the shared whitelist
 	// rejects both fields outright, and re-running it on a bound Pod would
@@ -496,6 +495,35 @@ func TestNormalizeRemovesOnlyWhatWeAdded(t *testing.T) {
 	pod.Spec.Tolerations = pod.Spec.Tolerations[:1]
 	require.True(t, translate.Admit(normalizeForAdmission(pod, api.NodeName), &pod.ObjectMeta,
 		translate.DefaultCapabilities()).OK())
+}
+
+// TestNormalizeKeepsAUserNotReadyToleration: ours is tolerated forever
+// (tolerationSeconds nil). A user's 300-second one is a different thing with
+// the same key, and is not ours to delete -- it still gets refused, loudly,
+// the way any other toleration does.
+func TestNormalizeKeepsAUserNotReadyToleration(t *testing.T) {
+	pod := newPod("work-abc", "uid-1")
+	secs := int64(300)
+	pod.Spec.Tolerations = append(pod.Spec.Tolerations, corev1.Toleration{
+		Key:               corev1.TaintNodeNotReady,
+		Operator:          corev1.TolerationOpExists,
+		Effect:            corev1.TaintEffectNoExecute,
+		TolerationSeconds: &secs,
+	})
+	spec := normalizeForAdmission(pod, api.NodeName)
+	require.Len(t, spec.Tolerations, 1)
+	require.NotNil(t, spec.Tolerations[0].TolerationSeconds)
+}
+
+// TestAStampedPodIsStillAdmissible is the round trip the whole normalization
+// exists for: everything the webhook writes must survive a second look by the
+// shared whitelist, which rejects tolerations and nodeName outright.
+func TestAStampedPodIsStillAdmissible(t *testing.T) {
+	pod := newPod("work-abc", "uid-1")
+	pod.Spec.NodeName = api.NodeName
+	rs := translate.Admit(normalizeForAdmission(pod, api.NodeName), &pod.ObjectMeta,
+		translate.DefaultCapabilities())
+	require.True(t, rs.OK(), "a Pod this integration made is not admissible to it: %v", rs)
 }
 
 func TestNormalizeLeavesAHandSetNodeNameAlone(t *testing.T) {

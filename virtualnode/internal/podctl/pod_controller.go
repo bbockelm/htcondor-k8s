@@ -423,7 +423,39 @@ func (r *PodReconciler) finalize(ctx context.Context, pod *corev1.Pod) (ctrl.Res
 	if err := r.Update(ctx, pod); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, r.completeDeletion(ctx, pod)
+}
+
+// completeDeletion does the last thing a kubelet does for a deleted Pod, which
+// nothing else here would do.
+//
+// Deleting a *bound* Pod is a two-step conversation. The API server marks it
+// with a deletionTimestamp and a grace period and then waits; the object is
+// only really removed when the node it is bound to says the containers are
+// gone, which a kubelet does by issuing its own DELETE with
+// gracePeriodSeconds: 0. There is no kubelet on this node, so without this the
+// Pod sits in Terminating forever -- finalizers all removed, HTCondor job long
+// since gone, object still there. envtest found it immediately; it is invisible
+// to a fake client, which deletes as soon as the last finalizer comes off.
+//
+// Leaving a Pod Terminating is not cosmetic. The built-in Job controller
+// tracks terminating Pods separately from active ones and holds its own
+// batch.kubernetes.io/job-tracking finalizer until the Pod is accounted for,
+// so a Job whose Pods never finish terminating never finishes either.
+//
+// The UID precondition is the guard that matters: between reading this object
+// and issuing the delete, the Job controller may have created a replacement
+// Pod with the same name, and deleting that one would destroy work that is
+// running.
+func (r *PodReconciler) completeDeletion(ctx context.Context, pod *corev1.Pod) error {
+	if pod.Spec.NodeName == "" {
+		// Never bound, so nothing was ever waiting on a node: the API
+		// server removed it the moment the last finalizer came off.
+		return nil
+	}
+	uid := pod.UID
+	err := r.Delete(ctx, pod, client.GracePeriodSeconds(0), client.Preconditions{UID: &uid})
+	return client.IgnoreNotFound(err)
 }
 
 // reject puts an inadmissible Pod into a terminal state with a message naming

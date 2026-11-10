@@ -100,14 +100,17 @@ func TestDecideTable(t *testing.T) {
 		// podReplacementPolicy is the one field this webhook writes
 		// that is not part of .spec.template, so an explicit value is
 		// refused rather than overridden.
+		// Neither value is a reason to decline: the API server has
+		// already defaulted the field by the time a webhook sees it, so
+		// the two are indistinguishable. See Stamp.
 		{"explicit podReplacementPolicy Failed", admissionv1.Create, func(j *batchv1.Job) {
 			p := batchv1.Failed
 			j.Spec.PodReplacementPolicy = &p
 		}, true},
-		{"explicit podReplacementPolicy TerminatingOrFailed", admissionv1.Create, func(j *batchv1.Job) {
+		{"defaulted podReplacementPolicy TerminatingOrFailed", admissionv1.Create, func(j *batchv1.Job) {
 			p := batchv1.TerminatingOrFailed
 			j.Spec.PodReplacementPolicy = &p
-		}, false},
+		}, true},
 
 		{"somebody else's scheduler", admissionv1.Create, func(j *batchv1.Job) {
 			j.Spec.Template.Spec.SchedulerName = "volcano"
@@ -140,7 +143,7 @@ func TestStampWritesOnlyTheThreeFields(t *testing.T) {
 	Stamp(job)
 
 	require.Equal(t, api.SchedulerName, job.Spec.Template.Spec.SchedulerName)
-	require.Equal(t, []corev1.Toleration{Toleration()}, job.Spec.Template.Spec.Tolerations)
+	require.Equal(t, Tolerations(), job.Spec.Template.Spec.Tolerations)
 	require.NotNil(t, job.Spec.PodReplacementPolicy)
 	require.Equal(t, batchv1.Failed, *job.Spec.PodReplacementPolicy)
 
@@ -153,7 +156,7 @@ func TestStampWritesOnlyTheThreeFields(t *testing.T) {
 	// And nothing else in the spec moved.
 	want := before.DeepCopy()
 	want.Spec.Template.Spec.SchedulerName = api.SchedulerName
-	want.Spec.Template.Spec.Tolerations = []corev1.Toleration{Toleration()}
+	want.Spec.Template.Spec.Tolerations = Tolerations()
 	p := batchv1.Failed
 	want.Spec.PodReplacementPolicy = &p
 	require.Equal(t, want, job)
@@ -174,8 +177,40 @@ func TestStampKeepsUserTolerations(t *testing.T) {
 	job := translatableJob()
 	job.Spec.Template.Spec.Tolerations = []corev1.Toleration{{Key: "spot"}}
 	Stamp(job)
-	require.Len(t, job.Spec.Template.Spec.Tolerations, 2)
+	require.Len(t, job.Spec.Template.Spec.Tolerations, 1+len(Tolerations()))
 	require.Equal(t, "spot", job.Spec.Template.Spec.Tolerations[0].Key)
+}
+
+// TestStampTicksTheNotReadyTolerationsForever guards a failure that happens
+// every time this controller is restarted, not an edge case.
+//
+// A stopped virtual kubelet makes its Node Ready=False; the node lifecycle
+// controller taints it node.kubernetes.io/not-ready:NoExecute; the
+// DefaultTolerationSeconds admission plugin would otherwise have given every
+// Pod a 300-second toleration for that taint; and five minutes later the taint
+// manager deletes every bound Pod. Each deletion runs the pod controller's
+// finalizer, which condor_rm's a job that is running perfectly well.
+//
+// nil tolerationSeconds means forever. Zero would mean evict immediately,
+// which is the exact opposite, so the test asserts on nil rather than on
+// presence.
+func TestStampTolerateNotReadyForever(t *testing.T) {
+	job := translatableJob()
+	Stamp(job)
+
+	for _, key := range []string{corev1.TaintNodeNotReady, corev1.TaintNodeUnreachable} {
+		var found *corev1.Toleration
+		for i := range job.Spec.Template.Spec.Tolerations {
+			if job.Spec.Template.Spec.Tolerations[i].Key == key {
+				found = &job.Spec.Template.Spec.Tolerations[i]
+			}
+		}
+		require.NotNilf(t, found, "no toleration for %s; a restart would delete live Pods", key)
+		require.Equal(t, corev1.TaintEffectNoExecute, found.Effect)
+		require.Equal(t, corev1.TolerationOpExists, found.Operator)
+		require.Nilf(t, found.TolerationSeconds,
+			"%s must be tolerated forever; a number here is a deadline on the controller's downtime", key)
+	}
 }
 
 func newStamper() *JobStamper {

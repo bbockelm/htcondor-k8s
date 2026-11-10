@@ -58,6 +58,10 @@ type FakeQueue struct {
 	// reaper's grace period without sleeping.
 	Now func() time.Time
 
+	// PeekOutput is the tail a running job's starter would return, keyed
+	// by "cluster.proc".
+	PeekOutput map[string]string
+
 	nextCluster int
 	clusters    map[string]*fakeCluster
 	order       []string
@@ -221,6 +225,24 @@ func (f *FakeQueue) matches(cluster string, fc *fakeCluster, constraint string) 
 	}
 	v, ok := fc.attrs[attr]
 	return ok && v == want
+}
+
+// Peek answers with whatever a test put in PeekOutput.
+//
+// This controller never calls it -- reading a job's output is the kubelet
+// API's job, not the reconciler's -- but the Queue interface carries it, so
+// the fake has to be whole.
+func (f *FakeQueue) Peek(_ context.Context, cluster, proc int, stderr bool, maxBytes int64) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.QueryErr != nil {
+		return nil, f.QueryErr
+	}
+	out := f.PeekOutput[fmt.Sprintf("%d.%d", cluster, proc)]
+	if maxBytes > 0 && int64(len(out)) > maxBytes {
+		out = out[int64(len(out))-maxBytes:]
+	}
+	return []byte(out), nil
 }
 
 // --- test drivers -------------------------------------------------------

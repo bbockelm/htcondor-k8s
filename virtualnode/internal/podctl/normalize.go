@@ -8,7 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/bbockelm/htcondor-k8s/shared/translate"
-	"github.com/bbockelm/htcondor-k8s/virtualnode/api"
+	"github.com/bbockelm/htcondor-k8s/virtualnode/internal/webhook"
 )
 
 // Bookkeeping Kubernetes itself puts on a Job-created Pod. None of it is user
@@ -50,18 +50,23 @@ const AttrVirtualNode = "K8sVirtualNode"
 // that something downstream has since written to", and this approach has two
 // of its own instances of it:
 //
-//   - the webhook adds a toleration for the virtual node's taint, and
-//     translate.Admit rejects tolerations outright ("there are no node taints
-//     to tolerate");
+//   - the webhook adds tolerations -- for the virtual node's taint and for the
+//     not-ready/unreachable taints that would otherwise have the taint manager
+//     delete live Pods five minutes after a restart -- and translate.Admit
+//     rejects tolerations outright ("there are no node taints to tolerate");
 //   - binding sets .spec.nodeName, and translate.Admit rejects nodeName ("a
 //     job is matched to a slot by the negotiator and cannot be pinned").
 //
-// Both are fields we put there. Removing exactly those -- our toleration, by
-// key and value, and our node name, by name -- and leaving everything else
-// alone means a user's own toleration or a hand-set nodeName still gets
-// refused, which is the point. The admitted spec is also what gets recorded as
-// +K8sPodSpec, so what a reader gets back out of the job ad is the Pod as
-// written rather than the Pod as we rewrote it.
+// Both are fields we put there. Removing exactly those -- the tolerations from
+// webhook.Tolerations, matched whole, and our node name, by name -- and
+// leaving everything else alone means a user's own toleration or a hand-set
+// nodeName still gets refused, which is the point. The list is imported rather
+// than restated so that adding a fourth toleration in the webhook cannot
+// quietly start failing admission here.
+//
+// The admitted spec is also what gets recorded as +K8sPodSpec, so what a
+// reader gets back out of the job ad is the Pod as written rather than the Pod
+// as we rewrote it.
 func normalizeForAdmission(pod *corev1.Pod, nodeName string) *corev1.PodSpec {
 	spec := pod.Spec.DeepCopy()
 
@@ -71,7 +76,7 @@ func normalizeForAdmission(pod *corev1.Pod, nodeName string) *corev1.PodSpec {
 
 	kept := spec.Tolerations[:0]
 	for _, t := range spec.Tolerations {
-		if t.Key == api.TaintKey && t.Value == api.TaintValue && t.Effect == corev1.TaintEffectNoSchedule {
+		if isOurToleration(t) {
 			continue
 		}
 		kept = append(kept, t)
@@ -83,6 +88,17 @@ func normalizeForAdmission(pod *corev1.Pod, nodeName string) *corev1.PodSpec {
 	}
 
 	return spec
+}
+
+func isOurToleration(t corev1.Toleration) bool {
+	for _, want := range webhook.Tolerations() {
+		if t.Key == want.Key && t.Operator == want.Operator &&
+			t.Value == want.Value && t.Effect == want.Effect &&
+			t.TolerationSeconds == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // identityFor names the Kubernetes object a job stands for.

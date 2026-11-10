@@ -95,29 +95,6 @@ func Decide(job *batchv1.Job, op admissionv1.Operation, caps translate.Capabilit
 		return Verdict{Why: fmt.Sprintf("scheduler %q already requested", sched)}
 	}
 
-	// podReplacementPolicy is the one piece of Job-level behavior this
-	// approach genuinely cannot live with the default of.
-	//
-	// The built-in Job controller's isPodFailed counts a Pod with a
-	// deletionTimestamp as failed unless its phase is already Succeeded,
-	// precisely to catch orphans that will never reach a phase. Every Pod
-	// here spends a window in exactly that state: the pod controller holds
-	// a finalizer while it condor_rm's the job. Under the default
-	// TerminatingOrFailed that window burns a backoffLimit retry and
-	// manufactures a replacement Pod -- a second HTCondor submission for
-	// work that already ran. Under Failed the controller waits for a real
-	// terminal phase, which the pod controller writes from the job ad.
-	//
-	// An explicit TerminatingOrFailed is therefore refused rather than
-	// overridden. Overriding it would be the operator's .spec.suspend
-	// injury again in miniature: a user-meaningful field held at a value
-	// we chose, with no way left to tell "the user asked for this" from
-	// "we forced it". Refusing costs that Job nothing but a different
-	// scheduler.
-	if p := job.Spec.PodReplacementPolicy; p != nil && *p != batchv1.Failed {
-		return Verdict{Why: fmt.Sprintf("podReplacementPolicy %q cannot be honored asynchronously", *p)}
-	}
-
 	if rs := admitForPodInterception(&job.Spec, &job.ObjectMeta, caps); !rs.OK() {
 		return Verdict{Why: "not translatable", Rejections: rs}
 	}
@@ -171,22 +148,66 @@ func admitForPodInterception(spec *batchv1.JobSpec, meta *metav1.ObjectMeta, cap
 	return out
 }
 
-// Toleration is the one toleration this webhook adds, matching the taint the
-// node controller puts on the virtual node.
+// Tolerations are the tolerations this webhook adds. They are defined here,
+// where they are written, and imported by the pod controller, which has to
+// strip exactly this set back off before re-running admission. Two copies of
+// the list is how they come to disagree.
 //
-// It has to be added by somebody. The taint keeps other people's Pods off a
-// node that cannot really run them, and our own Pods are bound by hand rather
-// than by kube-scheduler -- but the API server's own admission still checks a
-// binding against the node's taints, and a NoSchedule taint with no matching
-// toleration is refused. Adding it in the webhook rather than at bind time
-// keeps the Pod honest: what it says about where it can run is true before it
-// runs, not patched afterwards.
-func Toleration() corev1.Toleration {
-	return corev1.Toleration{
-		Key:      api.TaintKey,
-		Operator: corev1.TolerationOpEqual,
-		Value:    api.TaintValue,
-		Effect:   corev1.TaintEffectNoSchedule,
+// The dependency runs controller -> webhook and never the other way, because
+// the webhook must stay free of the HTCondor client: it runs inside the
+// cluster on the synchronous create path of every Job it matches, and does not
+// want CEDAR linked into it.
+func Tolerations() []corev1.Toleration {
+	return []corev1.Toleration{
+		// The virtual node's own taint. It keeps other people's Pods off
+		// a node that cannot really run them, and the Pod has to say it
+		// can live there before it is placed there -- what a Pod claims
+		// about where it can run should be true before it runs, not
+		// patched at bind time.
+		{
+			Key:      api.TaintKey,
+			Operator: corev1.TolerationOpEqual,
+			Value:    api.TaintValue,
+			Effect:   corev1.TaintEffectNoSchedule,
+		},
+
+		// The next two keep a controller restart from deleting live
+		// work, and they are not defensive programming -- this is a
+		// failure that happens every time the process stops.
+		//
+		// When the virtual kubelet exits, the Node goes Ready=False (and
+		// any exit reaches that state once the lease expires). The node
+		// lifecycle controller then applies
+		// node.kubernetes.io/not-ready:NoExecute, and the
+		// DefaultTolerationSeconds admission plugin has already given
+		// every Pod a 300-second toleration for it. Five minutes later
+		// the taint manager deletes every Pod bound to the node. Each
+		// deletion runs the pod controller's finalizer, and that
+		// finalizer condor_rm's a job that is running perfectly well on
+		// an execute node that never heard of Kubernetes. A restart that
+		// takes longer than five minutes kills the user's work.
+		//
+		// tolerationSeconds is left nil, which means forever. Zero would
+		// mean "evict immediately" -- the opposite -- and is the one way
+		// to write this field wrong.
+		//
+		// This is safe here in a way it would not be for a real node,
+		// and the reason is the whole point of the pattern: nothing
+		// about these Pods depends on the node being up. There is no
+		// kubelet, no container on that machine and no local state. The
+		// Pod object is bookkeeping for work running somewhere else, and
+		// bookkeeping should not be deleted because the bookkeeper went
+		// to lunch.
+		{
+			Key:      corev1.TaintNodeNotReady,
+			Operator: corev1.TolerationOpExists,
+			Effect:   corev1.TaintEffectNoExecute,
+		},
+		{
+			Key:      corev1.TaintNodeUnreachable,
+			Operator: corev1.TolerationOpExists,
+			Effect:   corev1.TaintEffectNoExecute,
+		},
 	}
 }
 
@@ -196,16 +217,47 @@ func Stamp(job *batchv1.Job) {
 	podSpec := &job.Spec.Template.Spec
 	podSpec.SchedulerName = api.SchedulerName
 
-	if !hasToleration(podSpec.Tolerations) {
-		podSpec.Tolerations = append(podSpec.Tolerations, Toleration())
+	for _, want := range Tolerations() {
+		if !tolerates(podSpec.Tolerations, want) {
+			podSpec.Tolerations = append(podSpec.Tolerations, want)
+		}
 	}
 
-	// Only ever written when unset. Decide has already refused an explicit
-	// value other than Failed, so this never contradicts the user.
-	if job.Spec.PodReplacementPolicy == nil {
-		p := batchv1.Failed
-		job.Spec.PodReplacementPolicy = &p
-	}
+	// podReplacementPolicy is the one field outside .spec.template this
+	// webhook writes, and the one place this approach pays any of the
+	// co-ownership cost at all. Both halves of that are worth stating.
+	//
+	// Why it has to be Failed: the built-in Job controller's isPodFailed
+	// counts a Pod carrying a deletionTimestamp as failed unless its phase
+	// is already Succeeded, deliberately, to catch orphans that will never
+	// reach a phase. Every Pod here spends a window in exactly that state,
+	// because the pod controller holds a finalizer while it condor_rm's
+	// the job. Under the default TerminatingOrFailed that window burns a
+	// backoffLimit retry and manufactures a replacement Pod -- a second
+	// HTCondor submission for work that already ran. Failed makes the
+	// controller wait for a real terminal phase, which the pod controller
+	// writes from the job ad.
+	//
+	// Why it is written unconditionally rather than only when unset: it is
+	// never unset by the time a webhook sees it. The API server applies
+	// scheme defaulting while decoding the request body, before mutating
+	// admission runs, and batch/v1's SetDefaults_Job fills this field in
+	// with TerminatingOrFailed. So there is no observable difference
+	// between a user who asked for TerminatingOrFailed and a user who said
+	// nothing, and an earlier version of this code that refused the former
+	// refused every Job in the cluster. envtest caught it, in exactly the
+	// way it caught the operator's .spec.selector trap -- which is the same
+	// bug: a field defaulted after decode and before admission cannot carry
+	// user intent to a webhook.
+	//
+	// That makes this an honest, small instance of the thing
+	// docs/OPERATOR.md warns about. It is milder than .spec.suspend in the
+	// two ways that matter: there is only one safe value for an
+	// asynchronous provider, so nothing is lost by holding it; and nothing
+	// ever needs to read the user's original intent back, so there is no
+	// asymmetric resume to be stuck with.
+	p := batchv1.Failed
+	job.Spec.PodReplacementPolicy = &p
 }
 
 // Stamped reports whether a Job carries the mutation.
@@ -222,15 +274,17 @@ func Stamped(job *batchv1.Job) bool {
 	return job.Spec.Template.Spec.SchedulerName == api.SchedulerName
 }
 
-func hasToleration(ts []corev1.Toleration) bool {
-	want := Toleration()
+// tolerates reports whether ts already covers want, so that re-stamping a Job
+// does not append a duplicate.
+func tolerates(ts []corev1.Toleration, want corev1.Toleration) bool {
 	for _, t := range ts {
-		if t.Key == want.Key && t.Value == want.Value && t.Effect == want.Effect {
+		if t.Key == want.Key && t.Operator == want.Operator &&
+			t.Value == want.Value && t.Effect == want.Effect {
 			return true
 		}
-		// A blanket "tolerate everything" toleration covers ours too,
-		// and appending a second one would be noise on the object.
-		if t.Operator == corev1.TolerationOpExists && t.Key == "" {
+		// A blanket "tolerate everything" toleration covers ours too, and
+		// appending beside it would be noise on the object.
+		if t.Operator == corev1.TolerationOpExists && t.Key == "" && t.Effect == "" {
 			return true
 		}
 	}
