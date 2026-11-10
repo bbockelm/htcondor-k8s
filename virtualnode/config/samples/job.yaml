@@ -23,7 +23,7 @@
 # restartPolicy must be Never. OnFailure means the kubelet restarts the
 # container in place, and there is no kubelet; backoffLimit gives you retries
 # that the real Job controller implements, which is strictly better. See
-# docs/VIRTUALNODE.md.
+# PODS-AND-WEBHOOK.md.
 apiVersion: batch/v1
 kind: Job
 metadata:

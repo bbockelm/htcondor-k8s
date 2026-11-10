@@ -108,7 +108,7 @@ func Decide(job *batchv1.Job, op admissionv1.Operation, caps translate.Capabilit
 // It is a filter rather than an edit to shared/translate on purpose. The
 // shared contract exists so the three approaches cannot drift into three
 // different Pod/job mappings, and the right place to fix this is upstream --
-// see docs/VIRTUALNODE.md and the report accompanying it, which proposes
+// see PODS-AND-WEBHOOK.md and the report accompanying it, which proposes
 // splitting AdmitJob into the checks that belong to the translation and the
 // checks that belong to a front end that is reimplementing Job semantics
 // itself. Until that lands, the override is narrow, named, and keyed on both
@@ -130,7 +130,7 @@ func admitForPodInterception(spec *batchv1.JobSpec, meta *metav1.ObjectMeta, cap
 	}
 
 	// restartPolicy: OnFailure is refused here although translate.Admit
-	// accepts it. See docs/VIRTUALNODE.md; the short version is that
+	// accepts it. See PODS-AND-WEBHOOK.md; the short version is that
 	// OnFailure means the kubelet restarts the container in place, there
 	// is no kubelet, and the Job controller's OnFailure backoff accounting
 	// keys on containerStatuses[].restartCount -- a number we would have
