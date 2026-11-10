@@ -43,6 +43,7 @@ const (
 	ReasonSubresource         Reason = "PodSubresourceUnsupported"
 	ReasonJobFieldUnsupported Reason = "JobFieldUnsupported"
 	ReasonInvalidValue        Reason = "InvalidValue"
+	ReasonMacroInjection      Reason = "SubmitMacroNotEscapable"
 )
 
 // Rejection is one reason a Pod cannot be modeled as an HTCondor job.
@@ -136,6 +137,7 @@ func Admit(spec *corev1.PodSpec, meta *metav1.ObjectMeta, caps Capabilities) Rej
 	if len(spec.Containers) == 1 {
 		admitContainer(&spec.Containers[0], "spec.containers[0]", volumes, caps, &rs)
 	}
+	admitMacroSafety(spec, meta, &rs)
 
 	sort.SliceStable(rs, func(i, j int) bool { return rs[i].Field < rs[j].Field })
 	return rs
@@ -387,4 +389,53 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// admitMacroSafety refuses the one piece of user text the submit file cannot
+// carry safely.
+//
+// condor_submit expands macros in every command value, and $(DOLLAR) is the
+// escape for a literal dollar sign. That escape covers every input but one:
+// two adjacent dollar signs. Expansion is a single left-to-right pass, so the
+// first $(DOLLAR) becomes a $ that then sits in front of the second one,
+// forming $$( --- HTCondor's deferred match-time substitution --- which is
+// left alone. The text would reach the job altered.
+//
+// This is narrow enough to reject outright. It is also a symptom: building
+// submit-file *text* from untrusted input means living inside condor_submit's
+// macro language. Constructing the job ClassAd directly would remove the whole
+// class of problem.
+func admitMacroSafety(spec *corev1.PodSpec, meta *metav1.ObjectMeta, rs *Rejections) {
+	check := func(field, value string) {
+		if strings.Contains(value, "$$") {
+			rs.add(field, ReasonMacroInjection,
+				"two adjacent dollar signs cannot be escaped in a submit file and would reach the job altered")
+		}
+	}
+
+	for i := range spec.Containers {
+		c := &spec.Containers[i]
+		field := fmt.Sprintf("spec.containers[%d]", i)
+		check(field+".image", c.Image)
+		check(field+".workingDir", c.WorkingDir)
+		for j, a := range c.Command {
+			check(fmt.Sprintf("%s.command[%d]", field, j), a)
+		}
+		for j, a := range c.Args {
+			check(fmt.Sprintf("%s.args[%d]", field, j), a)
+		}
+		for j := range c.Env {
+			check(fmt.Sprintf("%s.env[%d]", field, j), c.Env[j].Name)
+			check(fmt.Sprintf("%s.env[%d]", field, j), c.Env[j].Value)
+		}
+	}
+	if meta == nil {
+		return
+	}
+	for _, k := range sortedKeys(meta.Labels) {
+		check("metadata.labels["+k+"]", k+"="+meta.Labels[k])
+	}
+	for _, k := range sortedKeys(meta.Annotations) {
+		check("metadata.annotations["+k+"]", k+"="+meta.Annotations[k])
+	}
 }

@@ -74,11 +74,44 @@ func adString(t *testing.T, ad map[string]string, attr string) string {
 	t.Helper()
 	v, ok := ad[strings.ToLower(attr)]
 	require.True(t, ok, "job ad has no %s; got attributes: %v", attr, sortedKeys(ad))
-	unquoted, err := strconv.Unquote(v)
-	if err != nil {
+	return classAdUnquote(v)
+}
+
+// classAdUnquote decodes a ClassAd string literal the way HTCondor's own old
+// format reads one. strconv.Unquote is not a substitute: HTCondor prints a
+// lone backslash unescaped, so a value like back\slash is not valid Go syntax
+// and an unknown escape keeps its backslash rather than being an error.
+func classAdUnquote(v string) string {
+	if len(v) < 2 || v[0] != '"' || v[len(v)-1] != '"' {
 		return v
 	}
-	return unquoted
+	body := v[1 : len(v)-1]
+
+	var b strings.Builder
+	for i := 0; i < len(body); i++ {
+		if body[i] != '\\' || i+1 >= len(body) {
+			b.WriteByte(body[i])
+			continue
+		}
+		i++
+		switch body[i] {
+		case '"':
+			b.WriteByte('"')
+		case '\\':
+			b.WriteByte('\\')
+		case 'n':
+			b.WriteByte('\n')
+		case 't':
+			b.WriteByte('\t')
+		case 'r':
+			b.WriteByte('\r')
+		default:
+			// Unknown escape: the backslash was a literal one.
+			b.WriteByte('\\')
+			b.WriteByte(body[i])
+		}
+	}
+	return b.String()
 }
 
 func TestOracleMinimalPodProducesAContainerJob(t *testing.T) {
@@ -335,4 +368,88 @@ func TestOracleHostileTextSurvivesEscaping(t *testing.T) {
 	var back map[string]string
 	require.NoError(t, jsonUnmarshalString(adString(t, ad, AttrAnnotations), &back))
 	assert.Equal(t, hostile, back["note"])
+}
+
+// A Pod is untrusted input, and condor_submit expands macros in every command
+// value before anything else sees it. $ENV(X) reads the *submitting process's*
+// environment, which in both front ends is the server's. If this regresses,
+// anyone who can create a Pod can read the server's secrets out of its own
+// environment, so the test asserts on a real variable actually being set.
+func TestOracleUserTextCannotExpandSubmitMacros(t *testing.T) {
+	const secret = "hunter2-must-not-leak"
+	t.Setenv("HTCONDOR_K8S_ORACLE_SECRET", secret)
+
+	attacks := map[string]string{
+		"env":      "$ENV(HTCONDOR_K8S_ORACLE_SECRET)",
+		"macro":    "$(ProcId)",
+		"config":   "$(CONDOR_HOST)",
+		"function": "$F(Cmd)",
+	}
+
+	spec := goodPod()
+	spec.Containers[0].Args = []string{attacks["env"], attacks["macro"]}
+	spec.Containers[0].Env = []corev1.EnvVar{
+		{Name: "ATTACK", Value: attacks["env"]},
+		{Name: "MACRO", Value: attacks["macro"]},
+	}
+	id := Identity{Name: "p", Namespace: "n", Annotations: attacks}
+
+	ad := dryRun(t, mustSubmit(t, spec, id, SubmitOptions{Caps: DefaultCapabilities()}))
+
+	whole := strings.Join(sortedKeys(ad), " ")
+	for _, v := range ad {
+		whole += " " + v
+	}
+	assert.NotContains(t, whole, secret, "the submitting process's environment leaked into the job ad")
+
+	// Each attack string must arrive at the job exactly as the pod wrote it.
+	args := decodeV2(adString(t, ad, "Arguments"))
+	assert.Equal(t, []string{"-c", "echo hello", attacks["env"], attacks["macro"]}, args)
+
+	env := map[string]string{}
+	for _, kv := range decodeV2(adString(t, ad, "Environment")) {
+		k, v, _ := strings.Cut(kv, "=")
+		env[k] = v
+	}
+	assert.Equal(t, attacks["env"], env["ATTACK"])
+	assert.Equal(t, attacks["macro"], env["MACRO"])
+
+	var back map[string]string
+	require.NoError(t, jsonUnmarshalString(adString(t, ad, AttrAnnotations), &back))
+	assert.Equal(t, attacks, back)
+}
+
+// HTCondor's old ClassAd output prints a lone backslash unescaped, so the
+// printed literal "a\b" and the printed literal for a two-backslash value are
+// the same text. Reading an ad back as text therefore cannot recover a
+// backslash count. This is a property of HTCondor's printer, not of our
+// translation --- the schedd holds the right value --- but it bounds what a
+// client can reconstruct from `condor_q -long`, so it is pinned here rather
+// than rediscovered.
+//
+// It is also the reason the Pod spec travels as JSON inside a properly escaped
+// ClassAd literal instead of being reassembled from individual job attributes.
+func TestOracleBackslashIsAmbiguousOnTheWayOut(t *testing.T) {
+	one := goodPod()
+	one.Containers[0].Command = []string{"/bin/echo"}
+	one.Containers[0].Args = []string{`a\b`}
+
+	two := goodPod()
+	two.Containers[0].Command = []string{"/bin/echo"}
+	two.Containers[0].Args = []string{`a\\b`}
+
+	adOne := dryRun(t, mustSubmit(t, one, Identity{Name: "p", Namespace: "n"}, SubmitOptions{Caps: DefaultCapabilities()}))
+	adTwo := dryRun(t, mustSubmit(t, two, Identity{Name: "p", Namespace: "n"}, SubmitOptions{Caps: DefaultCapabilities()}))
+
+	assert.Equal(t, `a\b`, decodeV2(classAdUnquote(adOne["arguments"]))[0],
+		"one backslash reads back correctly")
+	assert.Equal(t, `a\b`, decodeV2(classAdUnquote(adTwo["arguments"]))[0],
+		"two backslashes read back as one: the printed form is ambiguous")
+
+	// The PodSpec attribute is escaped by us, so it does not share the
+	// ambiguity and is what a client should reconstruct from.
+	var back corev1.PodSpec
+	require.NoError(t, jsonUnmarshalString(adString(t, adTwo, AttrPodSpec), &back))
+	assert.Equal(t, []string{`a\\b`}, back.Containers[0].Args,
+		"the PodSpec attribute keeps both backslashes")
 }

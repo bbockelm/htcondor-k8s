@@ -406,3 +406,25 @@ func findLine(t *testing.T, text, prefix string) string {
 	t.Fatalf("no line with prefix %q in:\n%s", prefix, text)
 	return ""
 }
+
+func TestAdmitRejectsAdjacentDollars(t *testing.T) {
+	spec := goodPod()
+	spec.Containers[0].Args = []string{"cost is $$(Memory)"}
+	rs := Admit(spec, nil, DefaultCapabilities())
+	require.False(t, rs.OK())
+	assert.Contains(t, reasons(rs), ReasonMacroInjection)
+
+	// A single dollar sign is escapable and must stay allowed: shell
+	// snippets passed to sh -c are full of them.
+	spec = goodPod()
+	spec.Containers[0].Args = []string{"echo $HOME and $(date)"}
+	assert.True(t, Admit(spec, nil, DefaultCapabilities()).OK())
+}
+
+func TestAdmitRejectsAdjacentDollarsInAnnotations(t *testing.T) {
+	spec := goodPod()
+	meta := &metav1.ObjectMeta{Annotations: map[string]string{"note": "$$(Memory)"}}
+	rs := Admit(spec, meta, DefaultCapabilities())
+	require.False(t, rs.OK())
+	assert.Contains(t, reasons(rs), ReasonMacroInjection)
+}
