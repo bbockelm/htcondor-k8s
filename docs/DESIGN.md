@@ -155,9 +155,81 @@ It also corrected two attribute names I had guessed — `max_retries` produces
 `SuccessExitCode` — and confirmed that `+K8sPodSpec` survives the round trip
 with embedded quotes, backslashes, newlines and tabs in it.
 
-Worth considering whether this pattern should be a fuzzer rather than a table:
-generate admitted Pods, assert the ad round-trips. The argument-quoting bug is
-exactly the shape that random input finds and examples miss.
+So it became one. `FuzzArgumentRoundTrip` and `FuzzEnvironmentRoundTrip`
+generate argument and environment text, render it, and assert the argv
+HTCondor parsed equals the argv the Pod declared. 25,000 executions against
+`condor_submit` found, in the first three seconds, that **an empty argument was
+being dropped** — rendered as nothing it left two adjacent separators and
+vanished from argv. The V2 encoding for an empty argument is `''`.
+
+The fuzzers skip values containing a backslash, and
+`TestOracleBackslashIsAmbiguousOnTheWayOut` records why: HTCondor's old ClassAd
+output prints a lone backslash unescaped, so a printed literal cannot
+distinguish `a\b` from `a\\b`. That is the printer's property, not ours — the
+schedd holds the right value — but it bounds what any client can reconstruct
+from `condor_q -long`, and it is the reason the Pod spec travels as JSON inside
+a properly escaped literal rather than being reassembled from individual job
+attributes.
+
+## Untrusted text in a submit file expands macros
+
+This is the finding I would want looked at first.
+
+`condor_submit` expands macros in **every command value** before anything else
+parses it, and the expansions are not confined to the submit file:
+
+```
++Note = "token is $ENV(SECRET_TOKEN)"    ->    Note = "token is hunter2"
++Note = "host is $(CONDOR_HOST)"         ->    reads the submitter's config
+arguments = "$(ProcId)"                  ->    expanded, silently
+```
+
+`$ENV(X)` reads the **submitting process's** environment. Both front ends build
+submit files out of Pod specs they did not write, so before this was closed,
+anyone who could create a Pod could read the server's own environment back out
+of the job ad — the facade process's or the operator controller's. That is a
+cross-tenant disclosure of whatever is in there: tokens, kubeconfig paths,
+database URLs.
+
+Every expansion form starts with a dollar sign and `$(DOLLAR)` is the escape
+for a literal one, so `escapeSubmitMacros` escapes the sigil in all
+user-controlled text — arguments, environment, image, `initialdir`, and the
+contents of `+Attr = "…"` literals, since expansion reaches inside ClassAd
+string literals too. `TestOracleUserTextCannotExpandSubmitMacros` sets a real
+variable and asserts it does not appear anywhere in the resulting ad.
+
+**The escape has exactly one hole, and admission now rejects it.** Expansion is
+a single left-to-right pass, so for two adjacent dollar signs the first
+`$(DOLLAR)` yields a `$` that then sits in front of the second escape, forming
+`$$(` — HTCondor's deferred match-time substitution — which is left alone.
+`$(DOLLAR)x$(DOLLAR)(Memory)` expands correctly; `$(DOLLAR)$(DOLLAR)(Memory)`
+does not. `$$` in user text is refused.
+
+Two things worth knowing about how this interacts with the actual submission
+path, which goes through golang-htcondor's own submit parser rather than
+`condor_submit`:
+
+- That parser **does not implement `$ENV()`**, so the environment-disclosure
+  vector is specific to anything that shells out to real `condor_submit`. It is
+  not a live hole in these two front ends today. It would become one the moment
+  a code path switched to the real binary, which is not the sort of thing that
+  should be load-bearing.
+- It **does** implement `$(ProcId)`, `$(ClusterId)` and `$(DOLLAR)`. So the
+  corruption half is live on the real path: an unescaped user argument
+  containing `$(ProcId)` really does reach the job as `0`. Verified both ways
+  against golang-htcondor directly — escaped text stays literal, unescaped text
+  gets substituted per proc.
+
+**The real fix is to stop going through submit-file text at all.** Building a
+submit file from untrusted input means living inside `condor_submit`'s macro
+language and getting the escaping right forever. `QmgmtConnection` already
+exposes `SendClusterAttributes`/`SendProcAttributes`, which take a ClassAd: if
+`PodToSubmit` became `PodToJobAd`, the entire macro layer — and this whole
+class of bug — would be gone. The cost is reimplementing the submit-file
+defaults that `condor_submit` applies for free (`Requirements`, the transfer
+plumbing, the retry expressions), which is exactly why it has not been done
+here. I think it is the right next step, and it is a decision worth making
+before either approach goes further.
 
 ## Known gaps in the shared layer
 

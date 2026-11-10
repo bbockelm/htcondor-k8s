@@ -107,6 +107,11 @@ func FuzzEnvironmentRoundTrip(f *testing.F) {
 		if !submitSafe(value) {
 			t.Skip("value is outside the alphabet a submit file can carry on one line")
 		}
+		if strings.Contains(value, `\\`) {
+			// Same measurement limit as the argument fuzzer: a printed
+			// ClassAd literal cannot distinguish one backslash from two.
+			t.Skip("backslash is not round-trippable through printed ClassAd text")
+		}
 
 		spec := goodPod()
 		spec.Containers[0].Env = []corev1.EnvVar{
