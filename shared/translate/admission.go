@@ -87,9 +87,9 @@ func (rs *Rejections) add(field string, reason Reason, format string, args ...an
 type Capabilities struct {
 	// MaxCPU, MaxMemoryBytes and MaxDiskBytes bound a single job. Zero means
 	// "no local bound" — the negotiator will decide.
-	MaxCPU        int64
+	MaxCPU         int64
 	MaxMemoryBytes int64
-	MaxDiskBytes  int64
+	MaxDiskBytes   int64
 
 	// GPUResourceNames are the extended resources that map onto request_gpus.
 	// Empty means the pool has no GPUs and any GPU request is rejected.

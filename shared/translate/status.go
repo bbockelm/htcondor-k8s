@@ -41,7 +41,7 @@ type JobAd struct {
 	EnteredCurrentStatus time.Time
 	CompletionDate       time.Time
 
-	RemoteHost  string
+	RemoteHost   string
 	NumJobStarts int
 
 	// Identity as read back from the custom attributes.
@@ -149,24 +149,24 @@ func HoldIsTerminal(code int) bool {
 		21: // StartdHeldJob: the EP held it; another EP may not.
 		return false
 	case 3, // JobPolicy: the job's own periodic_hold fired.
-		4,  // CorruptedCredential
-		6,  // FailedToCreateProcess
+		4,           // CorruptedCredential
+		6,           // FailedToCreateProcess
 		7, 8, 9, 10, // unable to open output/input (stream)
-		12, // TransferOutputError
-		13, // TransferInputError
-		14, // IwdError
-		19, // HookPrepareJobFailure
-		22, // UnableToInitUserLog
-		23, // FailedToAccessUserAccount
-		24, // NoCompatibleShadow
-		25, // InvalidCronSettings
-		26, // SystemPolicy: the pool's own SYSTEM_PERIODIC_HOLD fired.
+		12,     // TransferOutputError
+		13,     // TransferInputError
+		14,     // IwdError
+		19,     // HookPrepareJobFailure
+		22,     // UnableToInitUserLog
+		23,     // FailedToAccessUserAccount
+		24,     // NoCompatibleShadow
+		25,     // InvalidCronSettings
+		26,     // SystemPolicy: the pool's own SYSTEM_PERIODIC_HOLD fired.
 		32, 33, // Max transfer input/output size exceeded
-		34, // JobOutOfResources: it asked for less than it used.
-		35, // InvalidDockerImage: this is ImagePullBackOff by another name.
-		36, // FailedToCheckpoint
+		34,     // JobOutOfResources: it asked for less than it used.
+		35,     // InvalidDockerImage: this is ImagePullBackOff by another name.
+		36,     // FailedToCheckpoint
 		43, 44, // Pre/PostScriptFailed
-		45, // SingularityTestFailed
+		45,     // SingularityTestFailed
 		46, 47, // JobDuration/JobExecute exceeded
 		48, // HookShadowPrepareJobFailure
 		49: // CannotSwitchPrimaryGroup
