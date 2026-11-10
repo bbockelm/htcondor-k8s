@@ -77,6 +77,8 @@ jobs:
           grep -q -- '--- PASS: TestAStampedJobIsLeftAloneByKubeScheduler' out.txt
           grep -q -- '--- PASS: TestKubectlLogsReachesTheVirtualKubelet' out.txt
           grep -q -- '--- PASS: TestKubectlLogsHonorsTailLines' out.txt
+          grep -q -- '--- PASS: TestKubectlLogsFollowStreamsThroughTheProxy' out.txt
+          grep -q -- '--- PASS: TestKubectlLogsFollowEndsForATerminalPod' out.txt
           if grep -q -- '--- SKIP' out.txt; then
             echo "::error::the k3s suite skipped a test on CI; a skip here tests nothing"
             exit 1
