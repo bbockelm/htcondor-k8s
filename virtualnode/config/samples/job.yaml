@@ -1,0 +1,48 @@
+# An ordinary batch/v1 Job. Nothing here is specific to HTCondor except the
+# label, which is what the webhook's objectSelector matches: claiming is
+# opt-in, so a Job without it runs on Kubernetes exactly as it always did.
+#
+# What happens when this is applied, and the order matters:
+#
+#  1. The webhook stamps schedulerName: htcondor and a toleration onto
+#     .spec.template, and sets podReplacementPolicy: Failed. It does NOT
+#     suspend the Job and does not write .status.
+#  2. The built-in Job controller therefore behaves completely normally. It
+#     creates real Pod objects and honors completions, parallelism,
+#     backoffLimit and activeDeadlineSeconds itself -- with parallelism: 2 and
+#     completions: 4 there are never more than two Pods at once, which is a
+#     thing neither of the other two approaches can do.
+#  3. kube-scheduler sees a schedulerName that is not its own and ignores the
+#     Pods, so they sit Pending.
+#  4. The pod controller takes each one, submits it to HTCondor, and binds it
+#     to the virtual node through pods/binding.
+#  5. The pod controller writes pod.status. The Job controller reads those
+#     statuses and derives job.status from them, so `kubectl get job` is
+#     right without anything here ever writing a Job.
+#
+# restartPolicy must be Never. OnFailure means the kubelet restarts the
+# container in place, and there is no kubelet; backoffLimit gives you retries
+# that the real Job controller implements, which is strictly better. See
+# docs/VIRTUALNODE.md.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hello-htcondor
+  namespace: default
+  labels:
+    htcondor.org/scheduler: "htcondor"
+spec:
+  completions: 4
+  parallelism: 2
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: work
+          image: docker://busybox:latest
+          command: ["/bin/sh", "-c", "echo hello from HTCondor; sleep 5"]
+          resources:
+            requests:
+              cpu: "1"
+              memory: 256Mi

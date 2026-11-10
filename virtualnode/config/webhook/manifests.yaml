@@ -1,0 +1,70 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: htcondor-k8s-job-scheduler
+webhooks:
+  - name: jobs.virtualnode.htcondor.org
+    # Fail, not Ignore -- and this is the one place this approach's manifest
+    # disagrees with the HTCJob operator's, so it is worth saying why.
+    #
+    # The operator's webhook matched every Job in the cluster. Failing open
+    # there was correct: a Job it did not claim ran on Kubernetes the way it
+    # always had, so an operator outage cost HTCondor some work and cost
+    # Kubernetes nothing. Failing closed would have been a cluster-wide outage
+    # of batch workloads over our certificate.
+    #
+    # This one is opt-in (see objectSelector), so every Job it sees is one
+    # whose author asked for HTCondor by name. Failing open sends that work to
+    # kube-scheduler instead -- quietly, onto nodes that may not have the
+    # image, the resources or the data -- and the user finds out from a
+    # Pending Pod or a surprising bill. Failing closed refuses the create with
+    # an error naming this webhook. Visible beats silent, and the blast radius
+    # is bounded to the Jobs that opted in.
+    #
+    # Note that there is a workaround even then: a Pod created directly with
+    # schedulerName: htcondor needs no webhook at all, and the pod controller
+    # admits it on its own.
+    failurePolicy: Fail
+    # Opt-in per object. docs/OPERATOR.md concluded that opt-in should have
+    # been the default on any shared cluster -- "a Job silently moving to a
+    # different compute pool is a surprise" -- and an objectSelector is a
+    # finer instrument than a namespaceSelector for saying so, because a
+    # namespace can hold both kinds of work.
+    objectSelector:
+      matchLabels:
+        htcondor.org/scheduler: "htcondor"
+    # The handler is pure: it reads the Job, decides, and returns a patch. It
+    # creates nothing and calls nothing, which is what lets it declare None
+    # and keeps dry-run honest.
+    sideEffects: None
+    # Short, because it is synchronous on the create path. Everything that
+    # could block -- reaching a schedd, writing an object -- is in the
+    # controller.
+    timeoutSeconds: 5
+    # Nothing another webhook does downstream can turn an unstampable Job into
+    # a stampable one.
+    reinvocationPolicy: Never
+    matchPolicy: Equivalent
+    admissionReviewVersions: ["v1"]
+    rules:
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        # jobs only, never jobs/status. This approach does not write Job
+        # status at all -- that is its entire point -- but matching the
+        # subresource would still put this webhook on the critical path of
+        # every status write kube-controller-manager makes.
+        resources: ["jobs"]
+        operations: ["CREATE", "UPDATE"]
+        scope: "Namespaced"
+    # Never look at the control plane's own namespaces.
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["kube-system", "kube-node-lease", "htcondor-system"]
+    clientConfig:
+      service:
+        name: htcondor-k8s-virtualnode-webhook
+        namespace: htcondor-system
+        path: /mutate-batch-v1-job
+        port: 443

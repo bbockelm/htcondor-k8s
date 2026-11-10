@@ -1,0 +1,33 @@
+# A bare Pod, with no Job above it and no webhook involved.
+#
+# This path is legitimate and is the reason the pod controller re-runs
+# translate.Admit itself rather than trusting that a webhook ran: nothing
+# admitted this object, so if it asked for a hostPath volume or a second
+# container it would be submitted asking for them. An inadmissible bare Pod
+# goes straight to Failed with the offending field paths in .status.message,
+# and is never bound.
+#
+# The toleration is required because the virtual node carries a NoSchedule
+# taint, and the API server checks a binding against it. For a Job the webhook
+# adds this; here it has to be written out.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hello-bare
+  namespace: default
+spec:
+  schedulerName: htcondor
+  restartPolicy: Never
+  tolerations:
+    - key: htcondor.org/virtual-node
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  containers:
+    - name: work
+      image: docker://busybox:latest
+      command: ["/bin/sh", "-c", "echo hello; sleep 30"]
+      resources:
+        requests:
+          cpu: "1"
+          memory: 256Mi

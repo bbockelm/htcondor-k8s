@@ -1,0 +1,61 @@
+# RBAC for the pod controller and the webhook.
+#
+# It is a ClusterRole of its own rather than one role for the whole binary, so
+# that the virtual node's half (nodes, nodes/status, the kubelet API's
+# authentication and authorization delegation) can be declared beside it
+# without the two being edited in the same file.
+#
+# Every verb here is one the controller actually issues. Of note:
+#
+#   pods/binding    create     the only API that may set .spec.nodeName, and
+#                              the reason this is not blanket write access to
+#                              every Pod spec in the cluster
+#   pods/status     update     the Pod phases the Job controller counts
+#   pods/finalizers update     required to put a finalizer on an object whose
+#                              ownerReference points at a Job
+#   pods            update     annotations only: the job id, the schedd, the
+#                              spool directory and the hold reason
+#
+# There is deliberately no access to batch/jobs at all, not even read. This
+# approach never looks at a Job after admission and never writes one; if a
+# `jobs` rule ever appears here, something has started co-owning the object
+# that docs/OPERATOR.md spent three injuries learning not to.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: htcondor-virtualnode-podctl
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["pods/binding"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/finalizers"]
+    verbs: ["update"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # Leader election, so that two replicas do not both submit for one Pod and
+  # do not both run the orphan sweep.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: htcondor-virtualnode-podctl
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: htcondor-virtualnode-podctl
+subjects:
+  - kind: ServiceAccount
+    name: htcondor-virtualnode
+    namespace: htcondor-system
