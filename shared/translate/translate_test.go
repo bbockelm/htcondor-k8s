@@ -324,7 +324,10 @@ func TestPodStatusMapping(t *testing.T) {
 		{"killed by signal", JobAd{JobStatus: JobStatusCompleted, ExitBySignal: true, ExitSignal: 9}, corev1.PodFailed},
 		{"removed", JobAd{JobStatus: JobStatusRemoved}, corev1.PodFailed},
 		{"user hold is pending", JobAd{JobStatus: JobStatusHeld, HoldReasonCode: 1}, corev1.PodPending},
-		{"image pull hold is failed", JobAd{JobStatus: JobStatusHeld, HoldReasonCode: 26}, corev1.PodFailed},
+		{"image pull hold is failed", JobAd{JobStatus: JobStatusHeld, HoldReasonCode: 35}, corev1.PodFailed},
+		{"input transfer hold is failed", JobAd{JobStatus: JobStatusHeld, HoldReasonCode: 13}, corev1.PodFailed},
+		{"spooling input is pending", JobAd{JobStatus: JobStatusHeld, HoldReasonCode: 16}, corev1.PodPending},
+		{"startd hold is pending", JobAd{JobStatus: JobStatusHeld, HoldReasonCode: 21}, corev1.PodPending},
 		{"unknown hold is failed", JobAd{JobStatus: JobStatusHeld, HoldReasonCode: 99}, corev1.PodFailed},
 	}
 	for _, tc := range tests {
@@ -386,7 +389,7 @@ func TestJobStatusAggregation(t *testing.T) {
 func TestJobStatusFailsWhenNothingIsLeftRunning(t *testing.T) {
 	st := JobStatus([]JobAd{
 		{JobStatus: JobStatusCompleted, ExitCode: 1},
-		{JobStatus: JobStatusHeld, HoldReasonCode: 26},
+		{JobStatus: JobStatusHeld, HoldReasonCode: 35},
 	}, 2, nil)
 	assert.Equal(t, int32(2), st.Failed)
 	require.Len(t, st.Conditions, 1)

@@ -134,21 +134,49 @@ func PodStatus(ad JobAd, containerName string) corev1.PodStatus {
 // HoldIsTerminal reports whether a hold means the job will never run without
 // someone changing the submission itself.
 //
-// The codes are HTCondor's: 13 is a failure to transfer input, 14 a failure
-// writing output, 26 a failed container/docker image pull, 34 exceeding the
-// requested memory. Codes 1 (user requested) and 16 (spooling input) are
-// routine states a job passes through or is released from.
+// The codes are HTCondor's, from condor_holdcodes.h. Only a handful of holds
+// are states a job passes through or is routinely released from; the rest mean
+// the submission itself is wrong, and reporting Pending for those is reporting
+// a wait that will never end.
 func HoldIsTerminal(code int) bool {
 	switch code {
-	case 1, 16:
+	case 0:
+		// Unspecified: no hold at all.
 		return false
-	case 13, 14, 26, 34:
+	case 1, // UserRequest: somebody held it, somebody can release it.
+		15, // SubmittedOnHold: the submitter asked for this.
+		16, // SpoolingInput: a routine step of a remote submission.
+		21: // StartdHeldJob: the EP held it; another EP may not.
+		return false
+	case 3, // JobPolicy: the job's own periodic_hold fired.
+		4,  // CorruptedCredential
+		6,  // FailedToCreateProcess
+		7, 8, 9, 10, // unable to open output/input (stream)
+		12, // TransferOutputError
+		13, // TransferInputError
+		14, // IwdError
+		19, // HookPrepareJobFailure
+		22, // UnableToInitUserLog
+		23, // FailedToAccessUserAccount
+		24, // NoCompatibleShadow
+		25, // InvalidCronSettings
+		26, // SystemPolicy: the pool's own SYSTEM_PERIODIC_HOLD fired.
+		32, 33, // Max transfer input/output size exceeded
+		34, // JobOutOfResources: it asked for less than it used.
+		35, // InvalidDockerImage: this is ImagePullBackOff by another name.
+		36, // FailedToCheckpoint
+		43, 44, // Pre/PostScriptFailed
+		45, // SingularityTestFailed
+		46, 47, // JobDuration/JobExecute exceeded
+		48, // HookShadowPrepareJobFailure
+		49: // CannotSwitchPrimaryGroup
 		return true
 	default:
-		// Unknown system holds are treated as terminal: a job nobody
-		// understands is not going to start on its own, and reporting
-		// Pending forever is the worse failure mode.
-		return code != 0
+		// An unclassified hold is treated as terminal. A hold nobody has
+		// a rule for is not going to clear on its own, and a Pod stuck
+		// Pending forever is the worse failure mode: it is invisible,
+		// whereas a wrong Failed gets reported as a bug and fixed here.
+		return true
 	}
 }
 
