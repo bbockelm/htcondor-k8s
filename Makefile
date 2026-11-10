@@ -6,7 +6,7 @@
 #   facade/    kubectl-compatible API server in front of a schedd
 #   operator/  HTCJob CRD, mutating webhook and sync controller
 
-MODULES := shared facade operator
+MODULES := shared facade operator virtualnode
 GOENV   := GOWORK=off GOFLAGS=-mod=mod GOPRIVATE=github.com/bbockelm,github.com/PelicanPlatform
 
 .PHONY: all build test test-integration vet tidy fmt clean
