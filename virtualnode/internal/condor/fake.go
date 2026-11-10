@@ -279,7 +279,6 @@ func atoi(s string) int {
 	return v
 }
 
-
 // Peek returns whatever PeekOut holds for this proc and stream.
 func (f *FakeQueue) Peek(_ context.Context, cluster, proc int, stderr bool, maxBytes int64) ([]byte, error) {
 	f.mu.Lock()
