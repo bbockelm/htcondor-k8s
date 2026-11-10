@@ -40,6 +40,16 @@ type FakeQueue struct {
 	// jobs are really in the queue and the controller does not know it.
 	LoseSubmitResult bool
 
+	// PeekOut is the tail Peek returns, keyed by "cluster.proc.stream"
+	// where stream is "out" or "err". A missing key returns no bytes,
+	// which is what a job that has not written yet looks like.
+	PeekOut map[string][]byte
+
+	// PeekErr, when set, fails every Peek. It models a starter that
+	// cannot be reached, which is the common case rather than an exotic
+	// one: the job has to be running and the AP has to answer.
+	PeekErr error
+
 	nextCluster int
 	jobs        map[string][]*translate.JobAd // cluster id -> procs
 	ownerOf     map[string]string             // owner uid -> cluster id
@@ -51,6 +61,7 @@ type FakeQueue struct {
 func NewFakeQueue() *FakeQueue {
 	return &FakeQueue{
 		nextCluster: 100,
+		PeekOut:     map[string][]byte{},
 		jobs:        map[string][]*translate.JobAd{},
 		ownerOf:     map[string]string{},
 		held:        map[string]bool{},
@@ -266,4 +277,25 @@ func submitAttr(submitFile, attr string) string {
 func atoi(s string) int {
 	v, _ := strconv.Atoi(s)
 	return v
+}
+
+
+// Peek returns whatever PeekOut holds for this proc and stream.
+func (f *FakeQueue) Peek(_ context.Context, cluster, proc int, stderr bool, maxBytes int64) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.PeekErr != nil {
+		return nil, f.PeekErr
+	}
+	stream := "out"
+	if stderr {
+		stream = "err"
+	}
+	b := f.PeekOut[fmt.Sprintf("%d.%d.%s", cluster, proc, stream)]
+	// The real starter returns a bounded tail, and a caller that assumes
+	// it got the whole stream is wrong in a way only a large job reveals.
+	if maxBytes > 0 && int64(len(b)) > maxBytes {
+		b = b[int64(len(b))-maxBytes:]
+	}
+	return b, nil
 }

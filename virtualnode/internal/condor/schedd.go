@@ -45,6 +45,16 @@ type Queue interface {
 	// Hold and Release implement .spec.suspend.
 	Hold(ctx context.Context, constraint, reason string) error
 	Release(ctx context.Context, constraint, reason string) error
+
+	// Peek asks a running job's starter for the tail of its output.
+	//
+	// It exists for the case the spool directory cannot cover: an access
+	// point that does not share a filesystem with this process. Reading
+	// the file is always better when it is possible -- it works for a
+	// finished job and costs one open() -- so Peek is the fallback, not
+	// the primary path. It only answers while the job is running, and it
+	// returns a bounded tail rather than the whole stream.
+	Peek(ctx context.Context, cluster, proc int, stderr bool, maxBytes int64) ([]byte, error)
 }
 
 // Projection is the attribute set the controller reads back. Asking for only
@@ -123,6 +133,25 @@ func (q *scheddQueue) Hold(ctx context.Context, constraint, reason string) error
 func (q *scheddQueue) Release(ctx context.Context, constraint, reason string) error {
 	_, err := q.schedd.ReleaseJobs(ctx, constraint, reason)
 	return err
+}
+
+func (q *scheddQueue) Peek(ctx context.Context, cluster, proc int, stderr bool, maxBytes int64) ([]byte, error) {
+	req := htcondor.PeekRequest{Stdout: !stderr, Stderr: stderr, MaxBytes: maxBytes}
+	res, err := q.schedd.PeekJobOutput(ctx, cluster, proc, req)
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return nil, nil
+	}
+	stream := res.Stdout
+	if stderr {
+		stream = res.Stderr
+	}
+	if stream == nil {
+		return nil, nil
+	}
+	return stream.Bytes, nil
 }
 
 // OwnerConstraint is the deterministic handle from a Kubernetes object to its
