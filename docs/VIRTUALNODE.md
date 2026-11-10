@@ -50,19 +50,30 @@ that needs both should run both.
 
 ## Status
 
-Built and tested: 105 top-level tests pass across the module, 0 skips. The node lifecycle
-and the pod controller are tested against a real `kube-apiserver` via envtest,
-and submission against a real schedd.
+Built and tested: 110 top-level tests pass across the module, 0 skipped where
+a container runtime is present. The node lifecycle and the pod controller are
+tested against a real `kube-apiserver` via envtest, submission against a real
+schedd, and **the central premise against a real `kube-controller-manager`**
+running in k3s (`test/k3s`).
 
-**The load-bearing premise — that the real Job controller derives `job.status`
-from the Pod status this controller writes — is tested by simulation, not by
-the real controller.** envtest ships only `kube-apiserver`, `etcd` and
-`kubectl`; there is no `kube-controller-manager` binary, upstream publishes no
-darwin/arm64 build of one, and Docker was not running on the build machine, so
-k3d was unavailable. The simulation transcribes `isPodFailed` and
-`onlyReplaceFailedPods` from Kubernetes v1.37.0 verbatim so a reader can audit
-them against the original. Closing this gap needs a k3d or kind run and is the
-single most valuable next test.
+That last suite is the one that matters, because the approach depends on a
+component nobody here wrote. It proves, end to end: the real Job controller
+creates Pods from a stamped template and honors `parallelism`; kube-scheduler
+declines a Pod carrying a foreign `schedulerName` and leaves it unbound; this
+controller binds it through the binding subresource and writes `pod.status`;
+and **the real Job controller counts those statuses**, marks the Job
+`Complete`, and creates the next Pod. One HTCondor submission per completion.
+
+It skips itself, loudly, without a container runtime — which is right on a
+laptop and would be a vacuous pass on CI, so the workflow greps for the named
+tests and fails if anything skipped.
+
+It earned its keep on the first run. See [the service-account
+token](#the-injected-service-account-token) below: a real API server injects a
+projected volume into every Pod, `translate.Admit` rejects volumes, and this
+integration therefore refused **every Pod on any real cluster**. envtest does
+not enable that admission plugin, so no amount of simulation would have found
+it.
 
 ---
 
@@ -116,7 +127,7 @@ first place, so there is nothing to throttle.
 
 ---
 
-### The premise is tested by simulation, not by the real Job controller
+### The premise, and how it is now tested
 
 **envtest cannot run kube-controller-manager.** Its `ControlPlane` type has
 exactly two fields, `APIServer` and `Etcd`, and the asset bundle
@@ -138,14 +149,40 @@ What that buys and what it does not:
   works through `pods/binding` and a plain update of `spec.nodeName` is
   refused; an inadmissible Pod can be moved to `Failed` while unbound; a
   deleted Pod's job is removed and the Pod object actually goes away.
-- **Proved only by simulation**: that the real Job controller reads the
-  statuses we write the way this simulation does, and that it ends up with the
-  right `job.status`.
+- **Proved against a real `kube-controller-manager`**, in `test/k3s`: that the
+  Job controller creates the Pods, honors `parallelism`, reads back the
+  statuses this controller writes, and arrives at the right `job.status`.
 
-That gap is the load-bearing assumption of the entire approach and it is not
-closed. Closing it needs a cluster with a `kube-controller-manager` in it — a
-k3d or kind script in the shape of `operator/hack/k3d-e2e.sh` — which could not
-be run here because Docker is not running.
+The simulation is kept because it is fast, can construct states the real
+controller would not produce, and drives the webhook over TLS — but `test/k3s`
+is the evidence, and where the two disagree the real one wins. That ordering is
+not theoretical: the real cluster failed on the first run, for a reason the
+simulation could not represent.
+
+
+#### The injected service-account token
+
+A real API server's ServiceAccount admission plugin injects a projected
+`kube-api-access-<rand>` volume — and a read-only mount of it at the
+well-known service-account path — into **every** Pod. `translate.Admit`
+rejects volumes and volume mounts, so before this was handled, this
+integration refused every Pod on any real cluster. envtest does not enable
+that plugin, which is why 105 passing tests and a careful simulation all
+agreed it worked.
+
+`normalizeForAdmission` now strips exactly that volume and its mounts, matching
+on both the generated name prefix and the projected `serviceAccountToken`
+source, so a user's own projected volume is still refused. Stripping is the
+honest reading rather than a convenience: the token grants access to an API
+server the job cannot reach, because the job runs on an HTCondor execute node
+outside the cluster. A deployment that wants to be explicit can set
+`automountServiceAccountToken: false` on the pod template and stop the
+injection at its source.
+
+This is the third instance in this repo of the same shape — admission re-run
+on an object that something downstream has since written to — after
+`.spec.selector` and `podReplacementPolicy`, and the first where the writer was
+neither the user nor us.
 
 ---
 
@@ -473,7 +510,9 @@ should be able to answer, and it currently cannot.
 
 ### Known gaps
 
-- **The premise is simulated.** Named above; it is the first thing to fix.
+- **`kubectl logs` is unproven end to end.** `test/k3s` runs the controller
+  outside the cluster, so the API server cannot dial back to the kubelet API
+  to prove the log proxy. The server itself is tested directly over TLS.
 - **The lost-submit-then-reaped window**, which needs a history query.
 - **`restartPolicy: OnFailure` is refused**, narrowing the admitted subset
   below what `shared/translate` allows.

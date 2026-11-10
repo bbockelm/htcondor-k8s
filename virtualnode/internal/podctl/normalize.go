@@ -57,7 +57,23 @@ const AttrVirtualNode = "K8sVirtualNode"
 //   - binding sets .spec.nodeName, and translate.Admit rejects nodeName ("a
 //     job is matched to a slot by the negotiator and cannot be pinned").
 //
-// Both are fields we put there. Removing exactly those -- the tolerations from
+// And a third that nothing we wrote put there at all. The API server's
+// ServiceAccount admission plugin injects a projected `kube-api-access-<rand>`
+// volume, and a matching read-only mount at the well-known service-account
+// path, into *every* Pod in a real cluster. translate.Admit rejects volumes
+// and volume mounts, so without stripping it this integration refuses every
+// Pod anywhere outside a bare test API server -- which is exactly how it
+// behaved until a k3s cluster was pointed at it. The envtest suite never saw
+// it because the plugin is not enabled there.
+//
+// Stripping it is the honest reading rather than a convenience: the token
+// grants access to an API server the job cannot reach, because the job runs on
+// an HTCondor execute node outside the cluster. A deployment that wants to be
+// explicit about this can set automountServiceAccountToken: false on the pod
+// template, which stops the injection at the source; this handles the Pods
+// that did not.
+//
+// The first two are fields we put there. Removing exactly those -- the tolerations from
 // webhook.Tolerations, matched whole, and our node name, by name -- and
 // leaving everything else alone means a user's own toleration or a hand-set
 // nodeName still gets refused, which is the point. The list is imported rather
@@ -74,6 +90,8 @@ func normalizeForAdmission(pod *corev1.Pod, nodeName string) *corev1.PodSpec {
 		spec.NodeName = ""
 	}
 
+	stripServiceAccountToken(spec)
+
 	kept := spec.Tolerations[:0]
 	for _, t := range spec.Tolerations {
 		if isOurToleration(t) {
@@ -88,6 +106,72 @@ func normalizeForAdmission(pod *corev1.Pod, nodeName string) *corev1.PodSpec {
 	}
 
 	return spec
+}
+
+// serviceAccountTokenPath is where the ServiceAccount admission plugin mounts
+// the projected token it injects.
+const serviceAccountTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount"
+
+// serviceAccountVolumePrefix is the generated name's fixed part. Matching on
+// the name alone would be too loose -- a user may name a volume anything -- so
+// the source is checked as well.
+const serviceAccountVolumePrefix = "kube-api-access-"
+
+// stripServiceAccountToken removes the volume and mounts the API server
+// injected, and nothing else. A user's own projected volume, or their own
+// mount at that path, is left in place and will be refused by admission, which
+// is the correct answer: this integration cannot honor it.
+func stripServiceAccountToken(spec *corev1.PodSpec) {
+	injected := map[string]bool{}
+	kept := spec.Volumes[:0]
+	for _, v := range spec.Volumes {
+		if isInjectedServiceAccountVolume(v) {
+			injected[v.Name] = true
+			continue
+		}
+		kept = append(kept, v)
+	}
+	if len(injected) == 0 {
+		return
+	}
+	if len(kept) == 0 {
+		spec.Volumes = nil
+	} else {
+		spec.Volumes = kept
+	}
+
+	for i := range spec.Containers {
+		spec.Containers[i].VolumeMounts = stripMounts(spec.Containers[i].VolumeMounts, injected)
+	}
+	for i := range spec.InitContainers {
+		spec.InitContainers[i].VolumeMounts = stripMounts(spec.InitContainers[i].VolumeMounts, injected)
+	}
+}
+
+func isInjectedServiceAccountVolume(v corev1.Volume) bool {
+	if !strings.HasPrefix(v.Name, serviceAccountVolumePrefix) || v.Projected == nil {
+		return false
+	}
+	for _, src := range v.Projected.Sources {
+		if src.ServiceAccountToken != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func stripMounts(mounts []corev1.VolumeMount, injected map[string]bool) []corev1.VolumeMount {
+	kept := mounts[:0]
+	for _, m := range mounts {
+		if injected[m.Name] && m.MountPath == serviceAccountTokenPath {
+			continue
+		}
+		kept = append(kept, m)
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
 }
 
 func isOurToleration(t corev1.Toleration) bool {

@@ -32,11 +32,12 @@ The integration tests need real HTCondor on `PATH` and envtest assets
 (`setup-envtest use -p path`); they skip themselves loudly without them, so CI
 greps for named passing tests rather than for the absence of `FAIL`.
 
-One gap is worth knowing before reading the results: **no test runs against a
-real `kube-controller-manager`.** envtest ships only `kube-apiserver`, `etcd`
-and `kubectl`. That matters most to `virtualnode/`, whose central premise is
-that the built-in Job controller derives Job status from the Pod status it
-writes — tested there by a simulation transcribed from Kubernetes v1.37.0.
+`virtualnode/test/k3s` runs the approach against a **real
+`kube-controller-manager`** in a k3s container, which is the only evidence that
+the built-in Job controller derives Job status from the Pod status we write. It
+skips itself without a container runtime, so CI greps for the named tests and
+fails on a skip. It found a real defect on its first run that 105 passing tests
+and a careful simulation had all missed.
 
 The `shared` module's oracle tests run the generated submit files through a
 real `condor_submit` and assert on the job ad that comes back, and two fuzzers

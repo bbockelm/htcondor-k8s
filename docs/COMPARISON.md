@@ -10,14 +10,14 @@ run.
 | | Facade | Operator | Pod interception |
 |---|---|---|---|
 | What it is | a kubectl-compatible API server over a schedd | an `HTCJob` CRD plus a webhook that claims Jobs | a virtual node that takes the Pods the Job controller makes |
-| Tests passing | 41 + 4 integration (green under `-race`) | 46 | 105 |
+| Tests passing | 41 + 4 integration (green under `-race`) | 46 | 110 |
 | Against real HTCondor | 4 tests, real `condor_master` + real `kubectl` 1.26 | 1 test, real schedd | 2 tests, real schedd |
-| Against a real API server | n/a — it *is* the API server | 7 envtest cases | 17 envtest cases |
+| Against a real API server | n/a — it *is* the API server | 7 envtest cases | 17 envtest cases, **plus 3 against a real `kube-controller-manager` in k3s** |
 | Verified by hand | `kubectl apply/get/get -o wide/describe/logs/delete`; a job ran on a startd and `kubectl logs` returned its stdout | CRD structurally rejects 10 unsupported fields; webhook patches over TLS; suspend/resume; finalizer | binding subresource accepted and a raw `nodeName` write refused; deletion removes the job and the object |
 
 Counts are top-level test functions, counted the same way for each; there are
-114 subtests besides, and no test in any module skips. Across the whole repo:
-**237 passing, 0 skipped.**
+116 subtests besides, and no test skips where its dependencies are present.
+Across the whole repo: **242 passing, 0 skipped.**
 
 None of them is a sketch. The interesting result is what each one's failure
 modes turned out to be, because they are not symmetrical — and in two cases the
@@ -118,8 +118,9 @@ controller rather than approximated — `shared/translate` rejects
 `parallelism < completions` and that rejection is simply unnecessary here. And
 `kubectl logs` works, which is a dead end in the operator.
 
-It pays for that with one etcd object per task, and with two findings that only
-appeared when it was run against a real API server:
+It pays for that with one etcd object per task, and with three findings that
+only appeared when it was run against a real control plane — the third of which
+only a real *cluster* could show:
 
 - **A deleted Pod counts as failed.** `isPodFailed` treats any Pod with a
   `deletionTimestamp` that is not `Succeeded` as a failure, deliberately, to
@@ -133,6 +134,12 @@ appeared when it was run against a real API server:
   `.spec.selector` trap for the third time, and the pattern is now clear enough
   to state as a rule: **never write an admission check against the absence of a
   defaulted field.**
+
+- **A real API server injects a service-account volume into every Pod**, and
+  the admission whitelist rejects volumes — so the integration refused every
+  Pod on any real cluster, while 105 passing tests and a careful simulation of
+  the Job controller all agreed it worked. envtest does not enable that
+  admission plugin. Found on the first run against k3s.
 
 Its own co-ownership cost is real but far milder than the operator's: one
 field, one safe value, and nothing ever needs the user's intent read back.
@@ -180,9 +187,10 @@ HA** — if that comes up, switch rather than chase it.
 - **The multi-schedd case** is unaddressed everywhere.
 - **An `args`-only container is untested at runtime** (no container runtime on
   this machine); see DESIGN.md.
-- **No end-to-end run against a real `kube-controller-manager`.** envtest ships
-  only `kube-apiserver`, `etcd` and `kubectl`. This matters most to Pod
-  interception, whose central premise is simulated rather than observed.
+- **`kubectl logs` end to end on a real cluster.** The virtual node's log
+  server is tested directly over TLS, but nothing proves the API server's
+  proxy hop to it, because the controller runs outside the cluster in the
+  tests.
 
 ## The thing I would fix before any of them goes further
 

@@ -31,10 +31,18 @@
 // failure, and onlyReplaceFailedPods short-circuiting that when
 // podReplacementPolicy is Failed --- but reading source is not running it.
 //
-// Closing this gap needs a cluster with a kube-controller-manager in it. That
-// is a k3d or kind script, in the shape of operator/hack/k3d-e2e.sh, and it
-// could not run on this machine because Docker is not running. Until it does,
-// this file's name for the premise is "simulated".
+// That gap is now closed elsewhere: test/k3s runs the same flow against a real
+// kube-controller-manager inside a k3s container, and is what the premise
+// actually rests on. This suite is still worth having -- it is far faster, it
+// drives the webhook over real TLS, and it can construct states the real
+// controller would not produce -- but when the two disagree, test/k3s wins.
+//
+// Running it there immediately found something this file structurally could
+// not: a real API server's ServiceAccount admission plugin injects a projected
+// kube-api-access volume into every Pod, and translate.Admit rejects volumes,
+// so this integration refused every Pod on any real cluster. envtest does not
+// enable that plugin. A simulation can only be wrong in the ways you thought
+// to simulate.
 package podctl_test
 
 import (

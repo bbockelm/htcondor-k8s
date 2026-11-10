@@ -749,3 +749,75 @@ func TestPodConstraintDoesNotEscapeSubmitMacros(t *testing.T) {
 	require.NotContains(t, got, "$(DOLLAR)")
 	require.True(t, strings.HasPrefix(got, translate.AttrPodUID))
 }
+
+// The API server injects this into every Pod in a real cluster. Until it was
+// stripped, this integration refused every Pod on any cluster with the
+// ServiceAccount admission plugin enabled -- which is all of them. envtest
+// does not enable the plugin, so only the k3s suite caught it.
+func TestInjectedServiceAccountTokenIsStripped(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Volumes: []corev1.Volume{{
+				Name: "kube-api-access-xw82w",
+				VolumeSource: corev1.VolumeSource{
+					Projected: &corev1.ProjectedVolumeSource{
+						Sources: []corev1.VolumeProjection{
+							{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{Path: "token"}},
+						},
+					},
+				},
+			}},
+			Containers: []corev1.Container{{
+				Name:  "work",
+				Image: "docker://busybox:latest",
+				Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("1"),
+					corev1.ResourceMemory: resource.MustParse("512Mi"),
+				}},
+				VolumeMounts: []corev1.VolumeMount{{
+					Name:      "kube-api-access-xw82w",
+					MountPath: "/var/run/secrets/kubernetes.io/serviceaccount",
+					ReadOnly:  true,
+				}},
+			}},
+		},
+	}
+
+	spec := normalizeForAdmission(pod, "virtual-node")
+	require.Empty(t, spec.Volumes, "the injected volume must not survive")
+	require.Empty(t, spec.Containers[0].VolumeMounts, "the injected mount must not survive")
+	require.Empty(t, translate.Admit(spec, &metav1.ObjectMeta{}, translate.DefaultCapabilities()),
+		"a pod carrying only the injected token must still be admissible")
+}
+
+// The strip must be narrow. A user who asked for a projected token of their
+// own, or who named a volume to look like the plugin's, still gets refused --
+// which is correct, because this integration cannot honor either.
+func TestOnlyTheInjectedServiceAccountTokenIsStripped(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Volumes: []corev1.Volume{
+				{
+					// Right shape, wrong name: not the plugin's.
+					Name: "my-token",
+					VolumeSource: corev1.VolumeSource{
+						Projected: &corev1.ProjectedVolumeSource{
+							Sources: []corev1.VolumeProjection{
+								{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{Path: "token"}},
+							},
+						},
+					},
+				},
+				{
+					// Right name, wrong shape.
+					Name:         "kube-api-access-decoy",
+					VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+				},
+			},
+			Containers: []corev1.Container{{Name: "work"}},
+		},
+	}
+
+	spec := normalizeForAdmission(pod, "virtual-node")
+	require.Len(t, spec.Volumes, 2, "a user's own volume must not be stripped")
+}
