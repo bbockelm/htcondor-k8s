@@ -24,6 +24,7 @@ package k3s_test
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -32,9 +33,8 @@ import (
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -44,7 +44,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/bbockelm/htcondor-k8s/shared/translate"
-	"github.com/bbockelm/htcondor-k8s/virtualnode/api"
+	"github.com/bbockelm/htcondor-k8s/virtualnode/internal/kubelet"
+	"github.com/bbockelm/htcondor-k8s/virtualnode/internal/node"
 	"github.com/bbockelm/htcondor-k8s/virtualnode/internal/podctl"
 )
 
@@ -53,10 +54,21 @@ import (
 // for reasons that have nothing to do with this code.
 const k3sImage = "rancher/k3s:v1.37.2-k3s1"
 
+// hostAlias is the name the cluster uses to reach this process. It is
+// published as the virtual node's address, so it is also the name the API
+// server dials when a user runs `kubectl logs`.
+const hostAlias = "host.docker.internal"
+
 var (
 	k8sClient client.Client
+	clientset *kubernetes.Clientset
 	fakeQueue *podctl.FakeQueue
+	spoolRoot string
 	scheme    = runtime.NewScheme()
+
+	// containerName is the cluster, kept so the serving certificate can be
+	// signed by the CA that cluster's API server was told to trust.
+	containerName string
 
 	// dockerErr records why the cluster could not start. It is printed by
 	// every skip, because a suite that silently does nothing is worse than
@@ -109,8 +121,43 @@ func run(m *testing.M) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("building a client: %w", err)
 	}
-	if err := createVirtualNode(ctx); err != nil {
+	clientset, err = kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return 0, fmt.Errorf("building a typed client: %w", err)
+	}
+
+	spoolRoot, err = os.MkdirTemp("", "htck8s-spool-")
+	if err != nil {
+		return 0, fmt.Errorf("making a spool root: %w", err)
+	}
+	defer os.RemoveAll(spoolRoot)
+
+	certFile, keyFile, err := issueServingCert(ctx, containerName, spoolRoot, hostAlias, "localhost")
+	if err != nil {
+		return 0, fmt.Errorf("issuing a serving certificate the cluster trusts: %w", err)
+	}
+
+	// The kubelet API comes up first, because the port it lands on is
+	// what the node publishes and what the API server will dial.
+	port, stopKubelet, err := startKubelet(ctx, certFile, keyFile)
+	if err != nil {
+		return 0, fmt.Errorf("starting the kubelet API: %w", err)
+	}
+	defer stopKubelet()
+
+	stopNode, err := startNode(ctx, cfg, port)
+	if err != nil {
 		return 0, fmt.Errorf("registering the virtual node: %w", err)
+	}
+	defer stopNode()
+
+	// Prove the cluster can reach the log server before any test depends
+	// on it. The API server reports an unreachable kubelet as a bare 502
+	// Bad Gateway with no mention of TLS or of a refused connection, so
+	// without this a certificate problem and a routing problem look
+	// identical, and both look like a bug in the log server.
+	if err := probeKubelet(ctx, port); err != nil {
+		return 0, err
 	}
 
 	stopManager, err := startManager(cfg)
@@ -120,6 +167,91 @@ func run(m *testing.M) (int, error) {
 	defer stopManager()
 
 	return m.Run(), nil
+}
+
+// probeKubelet dials the log server from inside the cluster, twice: once
+// ignoring the certificate and once verifying it the way the API server will.
+// Which of the two fails says what is wrong.
+func probeKubelet(ctx context.Context, port int32) error {
+	url := fmt.Sprintf("https://%s:%d", hostAlias, port)
+
+	insecure := exec.CommandContext(ctx, "docker", "exec", containerName,
+		"kubectl", "--server="+url, "--insecure-skip-tls-verify",
+		"--request-timeout=10s", "get", "--raw", "/healthz")
+	if out, err := insecure.CombinedOutput(); err != nil {
+		return fmt.Errorf("the cluster cannot reach the log server at %s at all "+
+			"(not a certificate problem): %v: %s", url, err, strings.TrimSpace(string(out)))
+	}
+
+	verified := exec.CommandContext(ctx, "docker", "exec", containerName,
+		"kubectl", "--server="+url,
+		"--certificate-authority=/var/lib/rancher/k3s/server/tls/server-ca.crt",
+		"--request-timeout=10s", "get", "--raw", "/healthz")
+	if out, err := verified.CombinedOutput(); err != nil {
+		return fmt.Errorf("the cluster reaches the log server but rejects its certificate; "+
+			"this API server runs with --kubelet-certificate-authority: %v: %s",
+			err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// startKubelet serves the log API on every interface, so the cluster can
+// reach it through host-gateway, and returns the port it actually bound.
+func startKubelet(ctx context.Context, certFile, keyFile string) (int32, func(), error) {
+	srv, err := kubelet.New(kubelet.Config{
+		Pods: kubelet.PodsFromClient(k8sClient),
+		// Not self-signed: see k3s_cert_test.go. This API server was
+		// started with --kubelet-certificate-authority and will reject
+		// anything it cannot chain to the cluster CA.
+		CertFile: certFile,
+		KeyFile:  keyFile,
+		// Empty address binds all interfaces; the *published* address
+		// is hostAlias, set on the node below. The two are separate on
+		// purpose: what we listen on and what the cluster dials are
+		// different questions.
+		Address: "",
+		Port:    0,
+		Log:     logr.Discard(),
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	ln, err := srv.Listen()
+	if err != nil {
+		return 0, nil, err
+	}
+	port := int32(ln.Addr().(*net.TCPAddr).Port)
+
+	sctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(sctx, ln) }()
+	return port, func() { cancel(); <-done }, nil
+}
+
+// startNode registers the virtual node through the real controller rather
+// than by hand, because what it publishes -- the addresses and the kubelet
+// port -- is precisely what the log path depends on.
+func startNode(ctx context.Context, cfg *rest.Config, port int32) (func(), error) {
+	cs, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	ctl, err := node.New(node.Config{
+		Client:  cs,
+		Address: hostAlias,
+		Port:    port,
+		Log:     logr.Discard(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := ctl.Register(ctx); err != nil {
+		return nil, err
+	}
+	nctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- ctl.Run(nctx) }()
+	return func() { cancel(); <-done }, nil
 }
 
 // skipWithoutDocker is called by every test. The message names what was lost.
@@ -146,6 +278,7 @@ func dockerAvailable() error {
 // reaches it from this process.
 func startK3s(ctx context.Context) (*rest.Config, func(), error) {
 	name := fmt.Sprintf("htck8s-k3s-%d", os.Getpid())
+	containerName = name
 	_ = exec.Command("docker", "rm", "-f", name).Run()
 
 	// --privileged is k3s's own requirement; the disables drop components
@@ -156,11 +289,36 @@ func startK3s(ctx context.Context) (*rest.Config, func(), error) {
 	args := []string{
 		"run", "-d", "--name", name, "--privileged",
 		"-p", "127.0.0.1::6443",
+	}
+	// The API server has to dial *back* to the kubelet API this process
+	// serves, or `kubectl logs` cannot be tested at all.
+	//
+	// Docker Desktop already resolves host.docker.internal to a route that
+	// reaches the host, and passing --add-host *overrides* that with the
+	// bridge gateway -- which on Docker Desktop is an address inside the
+	// Linux VM, not the machine this test runs on. The symptom is a 502
+	// from the API server's proxy, which reads like a problem with the log
+	// server rather than with a name. On a plain Linux daemon the name
+	// does not exist at all, so there it has to be added.
+	if !dockerDesktop() {
+		args = append(args, "--add-host="+hostAlias+":host-gateway")
+	}
+	args = append(args,
 		k3sImage, "server",
 		"--disable=traefik", "--disable=metrics-server",
 		"--disable=servicelb", "--disable=local-storage",
 		"--disable-cloud-controller",
-	}
+		// Without this, apiserver->kubelet traffic goes through k3s's
+		// own agent tunnel, which only exists for nodes that registered
+		// as k3s agents. A virtual kubelet never does, so every
+		// `kubectl logs` comes back as a 502 that mentions neither the
+		// tunnel nor the reason -- even though the address is right,
+		// the port is open and the certificate verifies. Disabling the
+		// egress selector makes the API server dial the node's
+		// published address directly, which is what a stock
+		// kube-apiserver does anyway.
+		"--egress-selector-mode=disabled",
+	)
 	if out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput(); err != nil {
 		return nil, nil, fmt.Errorf("docker run: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -190,6 +348,17 @@ func startK3s(ctx context.Context) (*rest.Config, func(), error) {
 		return nil, nil, err
 	}
 	return cfg, stop, nil
+}
+
+// dockerDesktop reports whether the daemon provides host.docker.internal
+// itself. Everything else -- a Linux CI runner, podman, a remote daemon --
+// needs the name added explicitly.
+func dockerDesktop() bool {
+	out, err := exec.Command("docker", "info", "--format", "{{.OperatingSystem}}").Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "Docker Desktop")
 }
 
 func hostPort(ctx context.Context, name string) (string, error) {
@@ -256,36 +425,6 @@ func waitForAPI(ctx context.Context, cfg *rest.Config) error {
 	return fmt.Errorf("the API server never became usable: %w", last)
 }
 
-func createVirtualNode(ctx context.Context) error {
-	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   api.NodeName,
-			Labels: map[string]string{"type": "virtual-kubelet"},
-		},
-		Spec: corev1.NodeSpec{
-			Taints: []corev1.Taint{{
-				Key: api.TaintKey, Value: api.TaintValue, Effect: corev1.TaintEffectNoSchedule,
-			}},
-		},
-	}
-	if err := k8sClient.Create(ctx, node); err != nil {
-		return err
-	}
-	node.Status = corev1.NodeStatus{
-		Capacity: corev1.ResourceList{
-			corev1.ResourceCPU:    resource.MustParse("1k"),
-			corev1.ResourceMemory: resource.MustParse("1Ti"),
-			corev1.ResourcePods:   resource.MustParse("10k"),
-		},
-		Conditions: []corev1.NodeCondition{{
-			Type: corev1.NodeReady, Status: corev1.ConditionTrue,
-			LastHeartbeatTime: metav1.Now(), LastTransitionTime: metav1.Now(),
-		}},
-	}
-	node.Status.Allocatable = node.Status.Capacity
-	return k8sClient.Status().Update(ctx, node)
-}
-
 func startManager(cfg *rest.Config) (func(), error) {
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:  scheme,
@@ -303,6 +442,7 @@ func startManager(cfg *rest.Config) (func(), error) {
 		Queue:         fakeQueue,
 		Caps:          translate.DefaultCapabilities(),
 		ScheddName:    "ap.test",
+		SpoolRoot:     spoolRoot,
 		PollInterval:  250 * time.Millisecond,
 		RetryInterval: 250 * time.Millisecond,
 	}).SetupWithManager(mgr); err != nil {

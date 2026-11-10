@@ -28,6 +28,11 @@ func TestTheRealJobControllerDrivesAJobToCompletion(t *testing.T) {
 	skipWithoutDocker(t)
 	ctx := context.Background()
 
+	// Submissions are counted as a delta: the fake queue is shared by every
+	// test in this package and Go runs them in one process, so an absolute
+	// count silently depends on file order.
+	before := fakeQueue.SubmitCount()
+
 	job := translatableJob("premise")
 	htcwebhook.Stamp(job)
 	if err := k8sClient.Create(ctx, job); err != nil {
@@ -75,8 +80,8 @@ func TestTheRealJobControllerDrivesAJobToCompletion(t *testing.T) {
 	if !jobComplete(got) {
 		t.Fatalf("the real Job controller did not mark the job Complete; conditions: %+v", got.Status.Conditions)
 	}
-	if fakeQueue.SubmitCount() != 2 {
-		t.Fatalf("submitted %d times, want 2 -- one HTCondor job per completion", fakeQueue.SubmitCount())
+	if n := fakeQueue.SubmitCount() - before; n != 2 {
+		t.Fatalf("submitted %d times for this job, want 2 -- one HTCondor job per completion", n)
 	}
 }
 

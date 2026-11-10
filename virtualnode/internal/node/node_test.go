@@ -145,3 +145,54 @@ func TestACancelledUpdateIsNotReportedAsSuccess(t *testing.T) {
 	cancel()
 	require.Error(t, c.Register(ctx), "a cancelled write must not look like a successful one")
 }
+
+// The Hostname address must also be something the API server can reach.
+//
+// kube-apiserver dials whichever address type comes first in its
+// --kubelet-preferred-address-types, and the default order leads with
+// Hostname. Publishing the node's object name there points it at a name that
+// resolves nowhere, and `kubectl logs` fails with a bare 502. k3s happens to
+// lead with InternalIP, so the k3s end-to-end suite cannot catch this --
+// which is exactly why it is pinned here.
+func TestHostnameAddressIsReachableAndNotTheNodeName(t *testing.T) {
+	c, err := New(Config{
+		Client:   fake.NewSimpleClientset(),
+		NodeName: "htcondor-virtual-node",
+		Address:  "10.1.2.3",
+		Port:     10250,
+	})
+	require.NoError(t, err)
+
+	st := c.nodeStatus(nil, DefaultCapacity(), readyCondition{
+		Status: corev1.ConditionTrue, Reason: ReasonReady,
+	})
+	require.Contains(t, st.Addresses, corev1.NodeAddress{
+		Type: corev1.NodeHostName, Address: "10.1.2.3",
+	}, "the Hostname address must name something that resolves, not the node object's name")
+	for _, a := range st.Addresses {
+		require.NotEqual(t, "htcondor-virtual-node", a.Address,
+			"no published address may be the node's object name")
+	}
+}
+
+// A deployment whose node is reachable under a different name than the
+// address can say so, and then both are published as given.
+func TestHostnameOverrideIsPublishedAsGiven(t *testing.T) {
+	c, err := New(Config{
+		Client:   fake.NewSimpleClientset(),
+		Address:  "10.1.2.3",
+		Hostname: "vk.htcondor.svc.cluster.local",
+		Port:     10250,
+	})
+	require.NoError(t, err)
+
+	st := c.nodeStatus(nil, DefaultCapacity(), readyCondition{
+		Status: corev1.ConditionTrue, Reason: ReasonReady,
+	})
+	require.Contains(t, st.Addresses, corev1.NodeAddress{
+		Type: corev1.NodeHostName, Address: "vk.htcondor.svc.cluster.local",
+	})
+	require.Contains(t, st.Addresses, corev1.NodeAddress{
+		Type: corev1.NodeInternalIP, Address: "10.1.2.3",
+	})
+}

@@ -50,7 +50,7 @@ that needs both should run both.
 
 ## Status
 
-Built and tested: 110 top-level tests pass across the module, 0 skipped where
+Built and tested: 114 top-level tests pass across the module, 0 skipped where
 a container runtime is present. The node lifecycle and the pod controller are
 tested against a real `kube-apiserver` via envtest, submission against a real
 schedd, and **the central premise against a real `kube-controller-manager`**
@@ -63,6 +63,14 @@ declines a Pod carrying a foreign `schedulerName` and leaves it unbound; this
 controller binds it through the binding subresource and writes `pod.status`;
 and **the real Job controller counts those statuses**, marks the Job
 `Complete`, and creates the next Pod. One HTCondor submission per completion.
+
+It also proves **`kubectl logs` end to end**, which is the one affordance this
+approach has over the HTCJob operator. That path is not a read of any object:
+the API server looks up the node a Pod is bound to, picks an address off
+`status.addresses`, dials `status.daemonEndpoints.kubeletEndpoint.Port`, and
+proxies. Every hop is real, and the request goes through the same client-go
+call `kubectl` makes. Getting it to pass took three fixes and surfaced three
+things worth writing down — see [below](#what-it-takes-to-make-kubectl-logs-work).
 
 It skips itself, loudly, without a container runtime — which is right on a
 laptop and would be a vacuous pass on CI, so the workflow greps for the named
@@ -159,6 +167,41 @@ is the evidence, and where the two disagree the real one wins. That ordering is
 not theoretical: the real cluster failed on the first run, for a reason the
 simulation could not represent.
 
+
+#### What it takes to make `kubectl logs` work
+
+Three things, none of which the log server itself could tell us about. The
+symptom for all three is identical: **`502 Bad Gateway` from the API server's
+proxy**, with no mention of TLS, of a refused connection, or of a tunnel.
+
+1. **The Hostname address must resolve.** kube-apiserver dials whichever
+   address type comes first in `--kubelet-preferred-address-types`, and the
+   **default order leads with `Hostname`**. The node published its own object
+   name there, which resolves nowhere. k3s happens to lead with `InternalIP`,
+   so the end-to-end suite could not catch this — it is pinned by a unit test
+   instead, and `node.Config.Hostname` now defaults to the reachable address.
+
+2. **A self-signed serving certificate is rejected.** kube-apiserver verifies
+   the kubelet's certificate whenever it was started with
+   `--kubelet-certificate-authority`, and **k3s sets that by default**, as do
+   most managed distributions. So the note elsewhere that "the API server does
+   not verify this certificate" is true only of a bare kube-apiserver. A real
+   deployment needs a certificate signed by the cluster CA — in production, a
+   `CertificateSigningRequest` with `signerName:
+   kubernetes.io/kubelet-serving`. The test borrows the cluster's CA directly,
+   which is the same thing with fewer moving parts.
+
+3. **k3s tunnels apiserver→kubelet traffic.** Its default
+   `--egress-selector-mode=agent` routes those connections through k3s's own
+   agent tunnel, which exists only for nodes that registered as k3s agents. A
+   virtual kubelet never does. The test runs the cluster with
+   `--egress-selector-mode=disabled`, which is how a stock kube-apiserver
+   behaves anyway. **Anyone deploying this on k3s needs to know.**
+
+Because all three fail the same way, the suite probes the log server from
+inside the cluster before any test runs — once ignoring the certificate and
+once verifying it — so that a routing problem and a certificate problem stop
+looking alike.
 
 #### The injected service-account token
 
@@ -510,9 +553,9 @@ should be able to answer, and it currently cannot.
 
 ### Known gaps
 
-- **`kubectl logs` is unproven end to end.** `test/k3s` runs the controller
-  outside the cluster, so the API server cannot dial back to the kubelet API
-  to prove the log proxy. The server itself is tested directly over TLS.
+- **`kubectl logs -f` is not covered end to end.** The non-following read and
+  `tailLines` are proven through the real API server proxy; a followed stream
+  is tested only against the log server directly.
 - **The lost-submit-then-reaped window**, which needs a history query.
 - **`restartPolicy: OnFailure` is refused**, narrowing the admitted subset
   below what `shared/translate` allows.

@@ -10,14 +10,14 @@ run.
 | | Facade | Operator | Pod interception |
 |---|---|---|---|
 | What it is | a kubectl-compatible API server over a schedd | an `HTCJob` CRD plus a webhook that claims Jobs | a virtual node that takes the Pods the Job controller makes |
-| Tests passing | 41 + 4 integration (green under `-race`) | 46 | 110 |
+| Tests passing | 41 + 4 integration (green under `-race`) | 46 | 114 |
 | Against real HTCondor | 4 tests, real `condor_master` + real `kubectl` 1.26 | 1 test, real schedd | 2 tests, real schedd |
-| Against a real API server | n/a — it *is* the API server | 7 envtest cases | 17 envtest cases, **plus 3 against a real `kube-controller-manager` in k3s** |
+| Against a real API server | n/a — it *is* the API server | 7 envtest cases | 17 envtest cases, **plus 5 against a real cluster in k3s**, including `kubectl logs` through the API server proxy |
 | Verified by hand | `kubectl apply/get/get -o wide/describe/logs/delete`; a job ran on a startd and `kubectl logs` returned its stdout | CRD structurally rejects 10 unsupported fields; webhook patches over TLS; suspend/resume; finalizer | binding subresource accepted and a raw `nodeName` write refused; deletion removes the job and the object |
 
 Counts are top-level test functions, counted the same way for each; there are
 116 subtests besides, and no test skips where its dependencies are present.
-Across the whole repo: **242 passing, 0 skipped.**
+Across the whole repo: **246 passing, 0 skipped.**
 
 None of them is a sketch. The interesting result is what each one's failure
 modes turned out to be, because they are not symmetrical — and in two cases the
@@ -135,6 +135,13 @@ only a real *cluster* could show:
   to state as a rule: **never write an admission check against the absence of a
   defaulted field.**
 
+- **`kubectl logs` needs three things nobody tells you**, all of which fail as
+  the same bare `502`: a `Hostname` node address that actually resolves (the
+  default apiserver prefers it over `InternalIP`), a serving certificate signed
+  by the cluster CA (k3s sets `--kubelet-certificate-authority` by default), and
+  on k3s specifically `--egress-selector-mode=disabled`, because otherwise
+  apiserver→kubelet traffic goes through an agent tunnel a virtual node does
+  not have.
 - **A real API server injects a service-account volume into every Pod**, and
   the admission whitelist rejects volumes — so the integration refused every
   Pod on any real cluster, while 105 passing tests and a careful simulation of
@@ -187,10 +194,9 @@ HA** — if that comes up, switch rather than chase it.
 - **The multi-schedd case** is unaddressed everywhere.
 - **An `args`-only container is untested at runtime** (no container runtime on
   this machine); see DESIGN.md.
-- **`kubectl logs` end to end on a real cluster.** The virtual node's log
-  server is tested directly over TLS, but nothing proves the API server's
-  proxy hop to it, because the controller runs outside the cluster in the
-  tests.
+- **`kubectl logs -f`** end to end. The non-following read and `tailLines` now
+  go through the real API server proxy in `virtualnode/test/k3s`; a followed
+  stream is still only tested against the log server directly.
 
 ## The thing I would fix before any of them goes further
 

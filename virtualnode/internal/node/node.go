@@ -112,6 +112,13 @@ type Config struct {
 	Address string
 	Port    int32
 
+	// Hostname is published as the node's Hostname address. It defaults
+	// to Address, because the default kube-apiserver prefers Hostname
+	// over InternalIP when deciding where to send a `kubectl logs`, so a
+	// Hostname that does not resolve breaks logs on exactly the clusters
+	// that are configured out of the box.
+	Hostname string
+
 	// ProviderID defaults to htcondor://<NodeName>. Nothing in this PoC
 	// consumes it, but a cloud-provider-shaped identifier is what tooling
 	// expects to find on a node that is not a machine.
@@ -547,12 +554,28 @@ func (c *Controller) nodeStatus(prev *corev1.NodeStatus, capacity corev1.Resourc
 		BootID:                  c.cfg.NodeName,
 		KernelVersion:           "n/a",
 	}
+	// Both address types have to name something the API server can
+	// actually reach, because which one it picks is not ours to decide.
+	//
+	// kube-apiserver dials whichever address type comes first in its
+	// --kubelet-preferred-address-types, and the default order leads with
+	// Hostname. Publishing the node's *object name* there -- which is what
+	// this did at first -- points the API server at a name that resolves
+	// nowhere, and `kubectl logs` fails with a 502 on any cluster running
+	// the default order. k3s happens to lead with InternalIP, which is
+	// exactly the kind of difference that makes a bug look like it is not
+	// there.
+	hostname := c.cfg.Hostname
+	if hostname == "" {
+		hostname = c.cfg.Address
+	}
 	status.Addresses = []corev1.NodeAddress{
 		{Type: corev1.NodeInternalIP, Address: c.cfg.Address},
-		{Type: corev1.NodeHostName, Address: c.cfg.NodeName},
+		{Type: corev1.NodeHostName, Address: hostname},
 	}
 	// This is the field `kubectl logs` travels through. The API server
-	// dials InternalIP:this port; there is no discovery.
+	// dials the address it picked above on this port; there is no
+	// discovery.
 	status.DaemonEndpoints = corev1.NodeDaemonEndpoints{
 		KubeletEndpoint: corev1.DaemonEndpoint{Port: c.cfg.Port},
 	}
