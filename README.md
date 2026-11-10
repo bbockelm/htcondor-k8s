@@ -13,8 +13,11 @@ whose Pod-to-job mapping happened to be better.
 Both front ends sit in front of an HTCondor access point and submit through
 [golang-htcondor](https://github.com/bbockelm/golang-htcondor).
 
-See [docs/DESIGN.md](docs/DESIGN.md) for the shared design, and the per-approach
-notes in each directory.
+**Start with [docs/COMPARISON.md](docs/COMPARISON.md)** — which approach, and
+why. Then [docs/DESIGN.md](docs/DESIGN.md) for the shared layer (including a
+submit-file injection finding that applies well beyond this repo), and
+[docs/FACADE.md](docs/FACADE.md) / [docs/OPERATOR.md](docs/OPERATOR.md) for
+each approach in detail.
 
 ## Build
 
@@ -23,3 +26,12 @@ make build
 make test
 make test-integration   # skips itself without HTCondor / envtest binaries
 ```
+
+The integration tests need real HTCondor on `PATH` (facade, operator) and
+envtest assets (operator); both skip themselves cleanly without them, so CI
+greps for named passing tests rather than for the absence of `FAIL`.
+
+The `shared` module's oracle tests run the generated submit files through a
+real `condor_submit` and assert on the job ad that comes back, and two fuzzers
+do the same over random argument and environment text. They have found four
+real bugs so far.
