@@ -44,6 +44,11 @@ type JobAd struct {
 	RemoteHost   string
 	NumJobStarts int
 
+	// Image is the container image the job runs. It comes from the job ad
+	// rather than the Pod spec so that a container status reports what is
+	// actually running, not what was asked for.
+	Image string
+
 	// Identity as read back from the custom attributes.
 	Identity Identity
 	// Index is K8sCompletionIndex, or -1 when absent.
@@ -62,7 +67,7 @@ func PodStatus(ad JobAd, containerName string) corev1.PodStatus {
 	st := corev1.PodStatus{}
 	cs := corev1.ContainerStatus{
 		Name:  containerName,
-		Image: "",
+		Image: ad.Image,
 	}
 
 	switch ad.JobStatus {

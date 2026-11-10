@@ -299,7 +299,9 @@ func TestActiveDeadlineBecomesPeriodicRemove(t *testing.T) {
 	out, err := PodToSubmit(goodPod(), Identity{Name: "p", Namespace: "n"},
 		SubmitOptions{Caps: DefaultCapabilities(), ActiveDeadlineSeconds: 600})
 	require.NoError(t, err)
-	assert.Contains(t, out, "periodic_remove = (JobStatus == 2) && ((CurrentTime - EnteredCurrentStatus) > 600)")
+	assert.Contains(t, out, "periodic_remove = (time() - QDate) > 600")
+	assert.NotContains(t, out, "EnteredCurrentStatus",
+		"a deadline anchored on the current status restarts on every transition")
 }
 
 func TestClassAdStringEscaping(t *testing.T) {

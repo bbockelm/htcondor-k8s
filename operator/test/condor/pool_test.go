@@ -154,8 +154,17 @@ func TestSubmitAndTrackAgainstARealSchedd(t *testing.T) {
 		if ad.Identity.OwnerUID != string(hj.UID) {
 			t.Fatalf("the owner UID did not survive the round trip: %q", ad.Identity.OwnerUID)
 		}
-		if ad.Identity.Namespace != "default" || ad.Identity.Name != "real" {
-			t.Fatalf("the identity did not survive the round trip: %+v", ad.Identity)
+		// Each proc of a cluster is its own Pod, so each carries its
+		// own name and UID, stamped per proc at submit time. Checking
+		// them against the shared derivation is what stops the operator
+		// and the facade naming the same Pod differently.
+		wantName := translate.ProcPodName("real", ad.ProcID)
+		wantUID := translate.ProcPodUID(string(hj.UID), ad.ProcID)
+		if ad.Identity.Namespace != "default" || ad.Identity.Name != wantName {
+			t.Fatalf("the identity did not survive the round trip: %+v (want name %q)", ad.Identity, wantName)
+		}
+		if ad.Identity.UID != wantUID {
+			t.Fatalf("per-proc UID %q does not match the shared derivation %q", ad.Identity.UID, wantUID)
 		}
 		if ad.JobStatus == 0 {
 			t.Fatal("JobStatus did not parse")

@@ -54,7 +54,7 @@ func FuzzArgumentRoundTrip(f *testing.F) {
 		if !submitSafe(arg) {
 			t.Skip("argument is outside the alphabet a submit file can carry on one line")
 		}
-		if strings.Contains(arg, `\\`) {
+		if strings.Contains(arg, `\`) {
 			// Not a translation bug but a limit of the measurement:
 			// HTCondor's old ClassAd output prints a lone backslash
 			// unescaped, so a printed literal cannot distinguish one
@@ -107,7 +107,7 @@ func FuzzEnvironmentRoundTrip(f *testing.F) {
 		if !submitSafe(value) {
 			t.Skip("value is outside the alphabet a submit file can carry on one line")
 		}
-		if strings.Contains(value, `\\`) {
+		if strings.Contains(value, `\`) {
 			// Same measurement limit as the argument fuzzer: a printed
 			// ClassAd literal cannot distinguish one backslash from two.
 			t.Skip("backslash is not round-trippable through printed ClassAd text")

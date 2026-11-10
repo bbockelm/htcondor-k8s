@@ -28,7 +28,29 @@ const (
 	AttrPodSpec = "K8sPodSpec"
 	// AttrIndex is the completion index of an indexed Job.
 	AttrIndex = "K8sCompletionIndex"
+	// AttrJobSpec holds the batch/v1 JobSpec as JSON. The PodSpec alone
+	// cannot reconstruct a Job: completions, backoffLimit and
+	// completionMode live above it.
+	AttrJobSpec = "K8sJobSpec"
+	// AttrSpoolDir is the per-object directory holding stdout, stderr and
+	// the user log --- what `kubectl logs` reads.
+	AttrSpoolDir = "K8sSpoolDir"
 )
+
+// ProcPodName and ProcPodUID give the per-proc Pod identity of a multi-proc
+// cluster.
+//
+// One submission produces one HTCondor cluster but N Pods, and each needs its
+// own name and UID. Both front ends have to derive the same ones or a Pod will
+// have two identities depending on who is looking, so the derivation lives
+// here rather than in each of them. The submit file emits the same values via
+// $(ProcId), which keeps the queue authoritative.
+func ProcPodName(base string, proc int) string { return fmt.Sprintf("%s-%d", base, proc) }
+
+// ProcPodUID derives a per-proc UID from the cluster's UID. It is not a real
+// UUID, and nothing here depends on it being one: it only has to be stable and
+// unique within the cluster.
+func ProcPodUID(base string, proc int) string { return fmt.Sprintf("%s-%d", base, proc) }
 
 // Identity names the Kubernetes object a job stands for.
 type Identity struct {
@@ -71,6 +93,10 @@ type SubmitOptions struct {
 	// Suspend submits the job on hold, matching a batch/v1 Job with
 	// .spec.suspend: true.
 	Suspend bool
+
+	// JobSpecJSON, when set, is recorded as AttrJobSpec. A batch/v1 Job
+	// cannot be reconstructed from its PodSpec alone.
+	JobSpecJSON string
 
 	// ExtraAttributes are additional +Attr = value lines, already rendered
 	// as ClassAd literals. The deployment uses this for site policy.
@@ -151,9 +177,14 @@ func PodToSubmit(spec *corev1.PodSpec, id Identity, opts SubmitOptions) (string,
 		w("success_exit_code = 0")
 	}
 	if opts.ActiveDeadlineSeconds > 0 {
-		// Matching .spec.activeDeadlineSeconds: Kubernetes terminates the
-		// Pod and marks the Job DeadlineExceeded.
-		w("periodic_remove = (JobStatus == 2) && ((CurrentTime - EnteredCurrentStatus) > %d)", opts.ActiveDeadlineSeconds)
+		// A Job's .spec.activeDeadlineSeconds is wall clock measured from
+		// .status.startTime: it counts time spent pending, and a retry
+		// does not reset it. QDate is the queue's analogue of that
+		// instant. EnteredCurrentStatus would be wrong twice over --- it
+		// restarts on every status transition, so a job that is held and
+		// released gets a fresh deadline, and time spent idle never
+		// counts against one.
+		w("periodic_remove = (time() - QDate) > %d", opts.ActiveDeadlineSeconds)
 	}
 	if opts.Suspend {
 		w("hold = True")
@@ -178,26 +209,37 @@ func PodToSubmit(spec *corev1.PodSpec, id Identity, opts SubmitOptions) (string,
 // identityAttributes renders the +Attr lines that let either integration find
 // its way back from a job ad to a Kubernetes object.
 func identityAttributes(spec *corev1.PodSpec, id Identity, opts SubmitOptions) []string {
+	// A cluster of more than one proc is a Job: each proc is its own Pod
+	// and needs its own name and UID. $(ProcId) is expanded per proc at
+	// submit time, so the ad carries the same values ProcPodName and
+	// ProcPodUID compute.
+	perProc := opts.Count > 1
 	attrs := map[string]string{
-		AttrPodName:      classAdString(id.Name),
-		AttrPodNamespace: classAdString(id.Namespace),
+		AttrPodName:      procLiteral(id.Name, perProc),
+		AttrPodNamespace: ClassAdString(id.Namespace),
 	}
 	if id.UID != "" {
-		attrs[AttrPodUID] = classAdString(id.UID)
+		attrs[AttrPodUID] = procLiteral(id.UID, perProc)
 	}
 	if id.OwnerKind != "" {
-		attrs[AttrOwnerKind] = classAdString(id.OwnerKind)
-		attrs[AttrOwnerName] = classAdString(id.OwnerName)
-		attrs[AttrOwnerUID] = classAdString(id.OwnerUID)
+		attrs[AttrOwnerKind] = ClassAdString(id.OwnerKind)
+		attrs[AttrOwnerName] = ClassAdString(id.OwnerName)
+		attrs[AttrOwnerUID] = ClassAdString(id.OwnerUID)
 	}
 	if len(id.Labels) > 0 {
-		attrs[AttrLabels] = classAdString(mustJSON(id.Labels))
+		attrs[AttrLabels] = ClassAdString(mustJSON(id.Labels))
 	}
 	if len(id.Annotations) > 0 {
-		attrs[AttrAnnotations] = classAdString(mustJSON(id.Annotations))
+		attrs[AttrAnnotations] = ClassAdString(mustJSON(id.Annotations))
 	}
 	if spec != nil {
-		attrs[AttrPodSpec] = classAdString(mustJSON(spec))
+		attrs[AttrPodSpec] = ClassAdString(mustJSON(spec))
+	}
+	if opts.IWD != "" {
+		attrs[AttrSpoolDir] = ClassAdString(opts.IWD)
+	}
+	if opts.JobSpecJSON != "" {
+		attrs[AttrJobSpec] = ClassAdString(opts.JobSpecJSON)
 	}
 	for k, v := range opts.ExtraAttributes {
 		attrs[k] = v
@@ -222,7 +264,7 @@ func nodeSelectorRequirements(sel map[string]string, caps Capabilities) string {
 		if !ok {
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("(TARGET.%s == %s)", attr, classAdString(sel[k])))
+		parts = append(parts, fmt.Sprintf("(TARGET.%s == %s)", attr, ClassAdString(sel[k])))
 	}
 	if len(parts) == 0 {
 		return ""
@@ -325,8 +367,22 @@ func escapeSubmitMacros(s string) string {
 	return strings.ReplaceAll(s, "$", "$(DOLLAR)")
 }
 
-// classAdString renders a Go string as a ClassAd string literal.
-func classAdString(s string) string {
+// procLiteral renders a ClassAd string literal that, when perProc is set, has
+// the submit file's $(ProcId) macro appended. The macro is added outside the
+// escaping on purpose: it is ours, not the user's.
+func procLiteral(base string, perProc bool) string {
+	lit := ClassAdString(base)
+	if !perProc {
+		return lit
+	}
+	return lit[:len(lit)-1] + `-$(ProcId)"`
+}
+
+// ClassAdString renders a Go string as a ClassAd string literal, escaped so
+// that neither ClassAd syntax nor submit-file macro expansion can read
+// anything into it. Both front ends need it for their own custom attributes
+// and query constraints.
+func ClassAdString(s string) string {
 	var b strings.Builder
 	b.WriteByte('"')
 	for _, r := range s {

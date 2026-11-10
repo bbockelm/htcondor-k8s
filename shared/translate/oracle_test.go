@@ -453,3 +453,38 @@ func TestOracleBackslashIsAmbiguousOnTheWayOut(t *testing.T) {
 	assert.Equal(t, []string{`a\\b`}, back.Containers[0].Args,
 		"the PodSpec attribute keeps both backslashes")
 }
+
+// One submission is one HTCondor cluster but N Pods, and each proc needs its
+// own Pod name and UID. Both front ends would otherwise derive them
+// separately and drift, so the derivation is shared and the ad carries the
+// result: ProcPodName/ProcPodUID must agree with what $(ProcId) expands to.
+func TestOraclePerProcIdentityMatchesTheSharedDerivation(t *testing.T) {
+	id := Identity{Name: "sim", Namespace: "n", UID: "abc-123"}
+	text := mustSubmit(t, goodPod(), id, SubmitOptions{Caps: DefaultCapabilities(), Count: 4})
+
+	// -dry-run writes the last proc's ad; with queue 4 that is ProcId 3.
+	ad := dryRun(t, text)
+	require.Equal(t, "3", ad["procid"])
+
+	assert.Equal(t, ProcPodName("sim", 3), adString(t, ad, AttrPodName))
+	assert.Equal(t, ProcPodUID("abc-123", 3), adString(t, ad, AttrPodUID))
+
+	// A single-proc submission is one Pod and keeps the plain name.
+	single := dryRun(t, mustSubmit(t, goodPod(), id, SubmitOptions{Caps: DefaultCapabilities()}))
+	assert.Equal(t, "sim", adString(t, single, AttrPodName))
+	assert.Equal(t, "abc-123", adString(t, single, AttrPodUID))
+}
+
+func TestOracleSpoolDirAndJobSpecAreRecorded(t *testing.T) {
+	// condor_submit refuses an initialdir that does not exist.
+	spool := t.TempDir()
+	ad := dryRun(t, mustSubmit(t, goodPod(), Identity{Name: "p", Namespace: "n"},
+		SubmitOptions{
+			Caps:        DefaultCapabilities(),
+			IWD:         spool,
+			JobSpecJSON: `{"completions":3}`,
+		}))
+
+	assert.Equal(t, spool, adString(t, ad, AttrSpoolDir))
+	assert.JSONEq(t, `{"completions":3}`, adString(t, ad, AttrJobSpec))
+}

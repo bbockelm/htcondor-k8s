@@ -438,7 +438,7 @@ Reported rather than made, since `shared/` is read-only to this half.
 
 | Package | Count | What it covers |
 |---|---|---|
-| `internal/store` | 7 | version monotonicity and round-trip, snapshot diffing, ADDED/MODIFIED/DELETED, removed-job-is-deleted, watch resume from a snapshot version, 410 across generations, resync starting a new generation and expiring watchers |
+| `internal/store` | 8 | version monotonicity and round-trip, snapshot diffing, ADDED/MODIFIED/DELETED, removed-job-is-deleted, watch resume from a snapshot version, 410 across generations, 410 below the replay buffer's floor (and success *at* the floor), resync starting a new generation and expiring watchers |
 | `internal/backend` | 6 | ClassAd decoding, `LastRemoteHost` fallback, ignoring non-facade jobs, removed-job visibility, malformed attributes degrading rather than failing, constraint escaping |
 | `internal/apiserver` | 24 (+6 subtests) | discovery through client-go's real `RESTMapper`, create/get/list/delete through a real clientset, 422 with every rejection as a `StatusCause`, 409 on duplicates, selectors, Pod phase mapping, Job aggregation, Table printing for list/get/watch, logs from spool and via Peek |
 | `internal/source` | 3 | polling convergence; htcondordb replay-then-stream and non-facade-job filtering, against a real `classad/db` server |
