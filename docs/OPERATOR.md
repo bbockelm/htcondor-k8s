@@ -251,7 +251,7 @@ PATH=/path/to/release_dir/bin:/path/to/release_dir/sbin:$PATH \
 ./hack/k3d-e2e.sh                                     # skips without Docker
 ```
 
-Both integration suites skip cleanly when their dependency is absent. The CI workflow is at `operator/hack/ci/operator.yml` — **it has to be moved or symlinked to `.github/workflows/operator.yml`**, since GitHub only reads workflows from the repo root and I did not own the root. It greps for named passing tests rather than for the absence of `FAIL`.
+Both integration suites skip cleanly when their dependency is absent, and `hack/k3d-e2e.sh` skips when the Docker daemon is not running. CI is at [`.github/workflows/operator.yml`](../.github/workflows/operator.yml); it greps for named passing tests rather than for the absence of `FAIL`, so a suite that silently skipped cannot pass as green.
 
 Regenerate after changing `api/`:
 
