@@ -235,38 +235,27 @@ const (
 	legacyLabelJobName       = "job-name"
 )
 
-// NormalizeStoredJob strips the fields the API server adds to a Job on its way
-// into etcd, so that admission can be re-run on a stored object and get the
-// same answer the webhook got on the incoming one.
+// NormalizeStoredJob strips the bookkeeping the API server adds to a Job on
+// its way into etcd, so that what we record as the user's labels is what the
+// user actually wrote.
 //
-// This exists because of a real ordering trap. A mutating webhook sees the Job
-// before batch's registry strategy runs, and the strategy is what fills in
-// .spec.selector and the controller-uid/job-name labels on the pod template.
-// translate.AdmitJob rejects a set .spec.selector -- correctly, since a
-// hand-written selector means "adopt existing Pods" and there are none -- so
-// the webhook claims a Job and then every later look at the stored object
-// refuses it. The result is a Job that is suspended forever with a NotAdmitted
-// event, which is the worst of the available failure modes: silent, and it
-// looks like the pool rejected the work.
+// The batch registry strategy stamps controller-uid and job-name onto the pod
+// template after admission has run. Those are the Job controller's internal
+// join keys, not user intent, and carrying them into the job ad's +K8sLabels
+// would make them look like something a user could select on.
 //
-// The generated selector is distinguishable from a hand-written one:
-// .spec.manualSelector is the API's own flag for "the user set this". When it
-// is not set, the selector is the system's and carries no user intent, so
-// dropping it before admission loses nothing.
-//
-// The right long-term fix is in shared/translate -- AdmitJob should only
-// reject a selector when manualSelector is true -- and this function should
-// then go away.
+// It deliberately leaves .spec.selector alone. The registry generates one too,
+// and admission used to refuse it --- claiming a Job and then refusing it ever
+// after, which left the Job suspended forever --- but translate.AdmitJob now
+// keys on .spec.manualSelector, the API's own flag for "the user set this", so
+// a generated selector is no longer anyone's problem.
 func NormalizeStoredJob(js *batchv1.JobSpec) *batchv1.JobSpec {
 	out := js.DeepCopy()
-	if out.ManualSelector == nil || !*out.ManualSelector {
-		out.Selector = nil
-		for _, k := range []string{labelControllerUID, labelJobName, legacyLabelControllerUID, legacyLabelJobName} {
-			delete(out.Template.Labels, k)
-		}
-		if len(out.Template.Labels) == 0 {
-			out.Template.Labels = nil
-		}
+	for _, k := range []string{labelControllerUID, labelJobName, legacyLabelControllerUID, legacyLabelJobName} {
+		delete(out.Template.Labels, k)
+	}
+	if len(out.Template.Labels) == 0 {
+		out.Template.Labels = nil
 	}
 	return out
 }

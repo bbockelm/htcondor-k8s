@@ -38,8 +38,15 @@ func AdmitJob(spec *batchv1.JobSpec, meta *metav1.ObjectMeta, caps Capabilities)
 	if spec.SuccessPolicy != nil {
 		rs.add("spec.successPolicy", ReasonJobFieldUnsupported, "success policy is not translated")
 	}
-	if spec.Selector != nil {
-		rs.add("spec.selector", ReasonJobFieldUnsupported,
+	// Only a *manually* set selector is a problem. The Job registry fills
+	// in .spec.selector and the batch.kubernetes.io template labels in
+	// PrepareForCreate, which runs after mutating admission --- so a
+	// webhook sees no selector and claims the Job, while every later look
+	// at the stored object sees one. Keying on the presence of the field
+	// would make a claimed Job fail admission forever. ManualSelector is
+	// the API's own flag for "the user wrote this".
+	if spec.ManualSelector != nil && *spec.ManualSelector {
+		rs.add("spec.manualSelector", ReasonJobFieldUnsupported,
 			"a manually set selector implies adopting existing pods, which do not exist here")
 	}
 	if spec.TTLSecondsAfterFinished != nil {
@@ -100,13 +107,23 @@ func JobStatus(ads []JobAd, completions int32, startTime *metav1.Time) batchv1.J
 		}
 	}
 
+	// Kubernetes 1.31 split the terminal Job conditions in two, and since
+	// 1.33 the API server refuses a status that sets Complete or Failed
+	// without the interim condition that precedes it. Emitting both keeps
+	// a caller's status write from being rejected outright.
 	switch {
 	case completions > 0 && st.Succeeded >= completions:
 		st.CompletionTime = &latestFinish
-		st.Conditions = append(st.Conditions, jobCondition(batchv1.JobComplete, "", ""))
+		st.Conditions = append(st.Conditions,
+			jobCondition(batchv1.JobSuccessCriteriaMet, "CompletionsReached",
+				"every completion of the HTCondor cluster succeeded"),
+			jobCondition(batchv1.JobComplete, "", ""))
 	case st.Active == 0 && st.Failed > 0:
-		st.Conditions = append(st.Conditions, jobCondition(batchv1.JobFailed, "BackoffLimitExceeded",
-			"every proc of the HTCondor cluster reached a terminal failure"))
+		const reason = "BackoffLimitExceeded"
+		const msg = "every proc of the HTCondor cluster reached a terminal failure"
+		st.Conditions = append(st.Conditions,
+			jobCondition(batchv1.JobFailureTarget, reason, msg),
+			jobCondition(batchv1.JobFailed, reason, msg))
 	}
 	return st
 }

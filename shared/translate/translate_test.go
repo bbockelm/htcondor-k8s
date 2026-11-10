@@ -382,8 +382,8 @@ func TestJobStatusAggregation(t *testing.T) {
 	ads[2] = JobAd{JobStatus: JobStatusCompleted, ExitCode: 0}
 	st = JobStatus(ads, 3, nil)
 	assert.Equal(t, int32(3), st.Succeeded)
-	require.Len(t, st.Conditions, 1)
-	assert.Equal(t, batchv1.JobComplete, st.Conditions[0].Type)
+	require.Len(t, st.Conditions, 2)
+	assert.Equal(t, batchv1.JobComplete, st.Conditions[1].Type)
 }
 
 func TestJobStatusFailsWhenNothingIsLeftRunning(t *testing.T) {
@@ -392,8 +392,8 @@ func TestJobStatusFailsWhenNothingIsLeftRunning(t *testing.T) {
 		{JobStatus: JobStatusHeld, HoldReasonCode: 35},
 	}, 2, nil)
 	assert.Equal(t, int32(2), st.Failed)
-	require.Len(t, st.Conditions, 1)
-	assert.Equal(t, batchv1.JobFailed, st.Conditions[0].Type)
+	require.Len(t, st.Conditions, 2)
+	assert.Equal(t, batchv1.JobFailed, st.Conditions[1].Type)
 }
 
 func findLine(t *testing.T, text, prefix string) string {
@@ -427,4 +427,41 @@ func TestAdmitRejectsAdjacentDollarsInAnnotations(t *testing.T) {
 	rs := Admit(spec, meta, DefaultCapabilities())
 	require.False(t, rs.OK())
 	assert.Contains(t, reasons(rs), ReasonMacroInjection)
+}
+
+// The Job registry fills in .spec.selector after mutating admission, so a
+// webhook that claimed a Job must not find it inadmissible the next time
+// anyone looks at the stored object.
+func TestAdmitJobAcceptsTheAPIServersOwnSelector(t *testing.T) {
+	two := int32(2)
+	spec := &batchv1.JobSpec{
+		Completions: &two,
+		Selector:    &metav1.LabelSelector{MatchLabels: map[string]string{"batch.kubernetes.io/controller-uid": "uid"}},
+		Template:    corev1.PodTemplateSpec{Spec: *goodPod()},
+	}
+	assert.True(t, AdmitJob(spec, &metav1.ObjectMeta{}, DefaultCapabilities()).OK(),
+		"a defaulted selector is the API server's, not the user's")
+
+	manual := true
+	spec.ManualSelector = &manual
+	rs := AdmitJob(spec, &metav1.ObjectMeta{}, DefaultCapabilities())
+	require.False(t, rs.OK(), "a hand-written selector means adopting pods that do not exist")
+	assert.Contains(t, reasons(rs), ReasonJobFieldUnsupported)
+}
+
+func TestJobStatusEmitsTheInterimTerminalConditions(t *testing.T) {
+	st := JobStatus([]JobAd{{JobStatus: JobStatusCompleted, ExitCode: 0}}, 1, nil)
+	types := []batchv1.JobConditionType{}
+	for _, c := range st.Conditions {
+		types = append(types, c.Type)
+	}
+	assert.Equal(t, []batchv1.JobConditionType{batchv1.JobSuccessCriteriaMet, batchv1.JobComplete}, types,
+		"the API server refuses Complete without SuccessCriteriaMet")
+
+	st = JobStatus([]JobAd{{JobStatus: JobStatusCompleted, ExitCode: 1}}, 1, nil)
+	types = types[:0]
+	for _, c := range st.Conditions {
+		types = append(types, c.Type)
+	}
+	assert.Equal(t, []batchv1.JobConditionType{batchv1.JobFailureTarget, batchv1.JobFailed}, types)
 }

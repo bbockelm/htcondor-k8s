@@ -117,11 +117,11 @@ func TestProjectionIsDeepEnoughToNotAlias(t *testing.T) {
 	require.Equal(t, "sim", src.Template.Labels["app"])
 }
 
-// TestNormalizeStoredJobUndoesTheAPIServersOwnDefaulting guards a trap that
-// cost a full envtest run to find: the Job registry sets .spec.selector and
-// the controller-uid labels *after* mutating admission, so a Job the webhook
-// legitimately claimed is refused by admission ever after.
-func TestNormalizeStoredJobUndoesTheAPIServersOwnDefaulting(t *testing.T) {
+// The Job registry stamps .spec.selector and the controller-uid/job-name
+// labels onto a stored Job after mutating admission has run. Admission must
+// still agree with the verdict the webhook reached on the incoming object, and
+// the bookkeeping labels must not be mistaken for the user's own.
+func TestStoredJobStaysAdmissibleAndLosesTheBookkeepingLabels(t *testing.T) {
 	caps := translate.DefaultCapabilities()
 	src := sourceJob()
 	require.True(t, translate.AdmitJob(src, nil, caps).OK(), "the incoming Job is admissible")
@@ -132,17 +132,18 @@ func TestNormalizeStoredJobUndoesTheAPIServersOwnDefaulting(t *testing.T) {
 	}}
 	stored.Template.Labels["batch.kubernetes.io/controller-uid"] = "6f1b"
 	stored.Template.Labels["batch.kubernetes.io/job-name"] = "sim"
-	require.False(t, translate.AdmitJob(stored, nil, caps).OK(),
-		"the stored Job is refused, which is the trap")
+
+	require.True(t, translate.AdmitJob(stored, nil, caps).OK(),
+		"a generated selector must not reverse the webhook's verdict")
 
 	norm := NormalizeStoredJob(stored)
-	require.True(t, translate.AdmitJob(norm, nil, caps).OK(),
-		"normalizing must restore the webhook's verdict")
-	require.Nil(t, norm.Selector)
-	require.Equal(t, map[string]string{"app": "sim"}, norm.Template.Labels)
+	require.True(t, translate.AdmitJob(norm, nil, caps).OK())
+	require.Equal(t, map[string]string{"app": "sim"}, norm.Template.Labels,
+		"the registry's join keys are not the user's labels")
 
 	// The stored object itself must not be touched.
 	require.NotNil(t, stored.Selector)
+	require.Contains(t, stored.Template.Labels, "batch.kubernetes.io/job-name")
 }
 
 // A selector the user really did write is not ours to drop: manualSelector is
@@ -154,5 +155,6 @@ func TestNormalizeStoredJobKeepsAManualSelector(t *testing.T) {
 
 	norm := NormalizeStoredJob(stored)
 	require.NotNil(t, norm.Selector)
-	require.False(t, translate.AdmitJob(norm, nil, translate.DefaultCapabilities()).OK())
+	require.False(t, translate.AdmitJob(norm, nil, translate.DefaultCapabilities()).OK(),
+		"manualSelector is the user's statement of intent and stays refused")
 }
