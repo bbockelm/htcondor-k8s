@@ -155,12 +155,13 @@ type HTCContainer struct {
 	// +kubebuilder:validation:MinLength=1
 	Image string `json:"image"`
 
-	// Command is required, not optional as in a Pod: resolving an image's
-	// own entrypoint would mean pulling its manifest at admission time, and
-	// a job that runs the wrong thing is worse than one that is refused.
+	// Command overrides the image's ENTRYPOINT, as in a Pod. Left empty,
+	// the image's own entrypoint runs: the container universe expresses
+	// that with an empty executable, so nothing has to pull the image
+	// manifest to find out what it is.
 	//
-	// +kubebuilder:validation:MinItems=1
-	Command []string `json:"command"`
+	// +optional
+	Command []string `json:"command,omitempty"`
 
 	// +optional
 	Args []string `json:"args,omitempty"`

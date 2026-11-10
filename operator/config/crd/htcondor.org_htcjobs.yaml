@@ -134,12 +134,12 @@ spec:
                             type: array
                           command:
                             description: |-
-                              Command is required, not optional as in a Pod: resolving an image's
-                              own entrypoint would mean pulling its manifest at admission time, and
-                              a job that runs the wrong thing is worse than one that is refused.
+                              Command overrides the image's ENTRYPOINT, as in a Pod. Left empty,
+                              the image's own entrypoint runs: the container universe expresses
+                              that with an empty executable, so nothing has to pull the image
+                              manifest to find out what it is.
                             items:
                               type: string
-                            minItems: 1
                             type: array
                           env:
                             description: |-
@@ -252,7 +252,6 @@ spec:
                           workingDir:
                             type: string
                         required:
-                        - command
                         - image
                         - name
                         type: object

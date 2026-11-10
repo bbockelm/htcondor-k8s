@@ -32,7 +32,6 @@ const (
 	ReasonEnvFrom             Reason = "EnvFromUnsupported"
 	ReasonEnvValueFrom        Reason = "EnvValueFromUnsupported"
 	ReasonNoImage             Reason = "ImageRequired"
-	ReasonCommandRequired     Reason = "CommandRequired"
 	ReasonResourcesRequired   Reason = "ResourceRequestRequired"
 	ReasonResourceMismatch    Reason = "ResourceLimitBelowRequest"
 	ReasonResourceUnsupported Reason = "ResourceTypeUnsupported"
@@ -291,14 +290,6 @@ func admitVolumes(spec *corev1.PodSpec, caps Capabilities, rs *Rejections) map[s
 func admitContainer(c *corev1.Container, field string, volumes map[string]bool, caps Capabilities, rs *Rejections) {
 	if strings.TrimSpace(c.Image) == "" {
 		rs.add(field+".image", ReasonNoImage, "an image is required; there is nothing to run without one")
-	}
-	if len(c.Command) == 0 {
-		// Real condor_submit falls back to the container image's own
-		// entrypoint; golang-htcondor's submit parser does not yet, and
-		// resolving the entrypoint would mean pulling the image manifest
-		// at admission time. Rejecting is honest until one of those lands.
-		rs.add(field+".command", ReasonCommandRequired,
-			"command must be set explicitly; the image entrypoint is not resolved yet")
 	}
 	if len(c.Ports) > 0 {
 		rs.add(field+".ports", ReasonPortsUnsupported,

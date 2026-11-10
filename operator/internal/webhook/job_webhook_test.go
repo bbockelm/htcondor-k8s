@@ -70,9 +70,11 @@ func TestDecideClaimTable(t *testing.T) {
 				},
 			}}
 		}, false},
-		{"no command", admissionv1.Create, func(j *batchv1.Job) {
+		// A container with no command inherits its image's entrypoint,
+		// which the container universe can express, so it is claimable.
+		{"no command inherits the image entrypoint", admissionv1.Create, func(j *batchv1.Job) {
 			j.Spec.Template.Spec.Containers[0].Command = nil
-		}, false},
+		}, true},
 		{"no memory request", admissionv1.Create, func(j *batchv1.Job) {
 			delete(j.Spec.Template.Spec.Containers[0].Resources.Requests, corev1.ResourceMemory)
 		}, false},

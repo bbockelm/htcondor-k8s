@@ -113,7 +113,6 @@ func TestAdmitRejections(t *testing.T) {
 			s.Containers[0].Env = []corev1.EnvVar{{Name: "X", ValueFrom: &corev1.EnvVarSource{}}}
 		}, ReasonEnvValueFrom},
 		{"no image", func(s *corev1.PodSpec) { s.Containers[0].Image = "" }, ReasonNoImage},
-		{"no command", func(s *corev1.PodSpec) { s.Containers[0].Command = nil }, ReasonCommandRequired},
 		{"no cpu request", func(s *corev1.PodSpec) {
 			delete(s.Containers[0].Resources.Requests, corev1.ResourceCPU)
 		}, ReasonResourcesRequired},

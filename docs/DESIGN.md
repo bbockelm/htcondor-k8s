@@ -233,15 +233,16 @@ before either approach goes further.
 
 ## Known gaps in the shared layer
 
-- **`container.command` is required.** Real `condor_submit` falls back to the
-  image's own entrypoint for the container universe; golang-htcondor's submit
-  parser hard-requires an `executable`. Resolving the entrypoint ourselves would
-  mean pulling the image manifest at admission time, which drags a registry
-  client and registry credentials into the webhook. The right fix is upstream in
-  golang-htcondor — relax `setExecutable` for `universe = container` — and until
-  then admission rejects a Pod with no explicit `command`. This is the most
-  user-visible rough edge in the whole PoC; most real images rely on their
-  entrypoint.
+- **An `args`-only container is untested at runtime.** A container that omits
+  `command` inherits its image's ENTRYPOINT, and the container universe says
+  that with an empty `executable`: both `condor_submit` and golang-htcondor's
+  parser accept it and produce `Cmd = ""`, byte for byte the ad you get from
+  omitting the command entirely. What is checked is the submit side. Whether
+  the starter appends `Arguments` to the entrypoint the way `docker run image
+  <args>` does — which is what would make `args` without `command` match
+  Kubernetes exactly — has not been run end to end, because there is no
+  container runtime on this machine. It is the first thing to try on a real EP.
+
 - **`parallelism` below `completions` is rejected, not throttled.** HTCondor
   starts every idle proc of a cluster as soon as a slot matches. Honoring
   `parallelism` would mean the controller holding and releasing procs, which is

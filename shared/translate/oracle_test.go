@@ -488,3 +488,24 @@ func TestOracleSpoolDirAndJobSpecAreRecorded(t *testing.T) {
 	assert.Equal(t, spool, adString(t, ad, AttrSpoolDir))
 	assert.JSONEq(t, `{"completions":3}`, adString(t, ad, AttrJobSpec))
 }
+
+// A container that omits command inherits the image's ENTRYPOINT. The
+// container universe says that with an empty executable, and the resulting ad
+// must be the one you get from leaving the command out of the submit file
+// entirely --- otherwise we would be running something the Pod did not ask for.
+func TestOracleNoCommandInheritsTheImageEntrypoint(t *testing.T) {
+	spec := goodPod()
+	spec.Containers[0].Command = nil
+	spec.Containers[0].Args = []string{"--flag", "value"}
+
+	require.True(t, Admit(spec, nil, DefaultCapabilities()).OK(),
+		"a pod relying on its image entrypoint is admissible")
+
+	ad := dryRun(t, mustSubmit(t, spec, Identity{Name: "p", Namespace: "n"},
+		SubmitOptions{Caps: DefaultCapabilities()}))
+
+	assert.Equal(t, "", adString(t, ad, "Cmd"), "no executable means the image entrypoint")
+	assert.Equal(t, "true", ad["wantcontainer"])
+	assert.Equal(t, []string{"--flag", "value"}, decodeV2(adString(t, ad, "Arguments")),
+		"args without a command still reach the entrypoint")
+}

@@ -128,15 +128,21 @@ func PodToSubmit(spec *corev1.PodSpec, id Identity, opts SubmitOptions) (string,
 	w("universe = container")
 	w("container_image = %s", escapeSubmitMacros(c.Image))
 
-	// golang-htcondor's submit parser requires an executable even for the
-	// container universe, where real condor_submit would fall back to the
-	// image entrypoint. Admission guarantees command is set; see
-	// docs/DESIGN.md "Image entrypoint" for the upstream fix.
-	if len(c.Command) == 0 {
-		return "", fmt.Errorf("translate: container.command is required (no image-entrypoint resolution yet)")
+	// Kubernetes lets a container omit command and inherit the image's
+	// ENTRYPOINT. An empty executable is how the container universe says
+	// the same thing: both condor_submit and golang-htcondor's parser
+	// accept it and produce Cmd = "", which is byte for byte the ad you
+	// get from omitting the command entirely. Resolving the entrypoint
+	// ourselves would mean pulling the image manifest at admission time,
+	// which is a registry client and registry credentials in the webhook.
+	var args []string
+	if len(c.Command) > 0 {
+		w("executable = %s", escapeSubmitMacros(c.Command[0]))
+		args = append(args, c.Command[1:]...)
+	} else {
+		w("executable =")
 	}
-	w("executable = %s", escapeSubmitMacros(c.Command[0]))
-	args := append(append([]string{}, c.Command[1:]...), c.Args...)
+	args = append(args, c.Args...)
 	if len(args) > 0 {
 		w("arguments = %s", quoteArgsV2(args))
 	}
