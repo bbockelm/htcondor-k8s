@@ -285,10 +285,16 @@ func quoteEnvV2(env []corev1.EnvVar, withIndex bool) string {
 }
 
 func quoteV2Word(s string) string {
+	// A literal double quote is doubled everywhere: the whole value sits
+	// inside the submit command's own double quotes.
 	escaped := strings.ReplaceAll(s, `"`, `""`)
-	escaped = strings.ReplaceAll(escaped, `'`, `''`)
-	if strings.ContainsAny(s, " \t\n") {
-		return "'" + escaped + "'"
+
+	// A single quote is different. Doubling it is a literal only *inside* a
+	// single-quoted region; outside one, '' opens and immediately closes an
+	// empty region and the apostrophe silently disappears --- it's arrives
+	// at the job as its. So a word containing one is quoted as a whole.
+	if strings.ContainsAny(s, " \t\n'") {
+		return "'" + strings.ReplaceAll(escaped, `'`, `''`) + "'"
 	}
 	return escaped
 }
