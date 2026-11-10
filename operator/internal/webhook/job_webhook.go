@@ -98,7 +98,53 @@ func Decide(job *batchv1.Job, op admissionv1.Operation, caps translate.Capabilit
 // is the only way to stop the built-in Job controller from manufacturing Pod
 // objects that will never be scheduled. The user's own suspend intent is moved
 // into an annotation first, because the field no longer carries it.
-func Claim(job *batchv1.Job, now time.Time) {
+// ClaimOptions selects how strongly a claimed Job is taken away from the
+// built-in Job controller.
+type ClaimOptions struct {
+	// ManagedBy writes .spec.managedBy, which makes the built-in Job
+	// controller skip the Job outright. It can only be set at CREATE,
+	// because the field is immutable.
+	ManagedBy bool
+
+	// SuspendFallback forces .spec.suspend even when ManagedBy was
+	// written.
+	//
+	// It is the answer to "what if the cluster ignores managedBy": on a
+	// Kubernetes older than 1.32, or one with the JobManagedBy gate
+	// explicitly off, the field is accepted and does nothing, the Job
+	// controller makes Pods, and the work runs both here and there. The
+	// cost of the belt is the asymmetric resume that suspend has always
+	// had; the cost of going without it is running a user's job twice.
+	SuspendFallback bool
+}
+
+// Claim applies the mutation.
+func Claim(job *batchv1.Job, now time.Time) { ClaimWith(job, now, ClaimOptions{SuspendFallback: true}) }
+
+// ClaimWith is Claim with the ownership strategy named explicitly.
+//
+// managedBy is only written when the field is still empty. It is immutable,
+// so writing it on an update to a Job created before this operator existed
+// would have the API server reject the whole update -- which, on the claimed
+// path, means the user's update fails for a reason that has nothing to do
+// with what they changed.
+func ClaimWith(job *batchv1.Job, now time.Time, opts ClaimOptions) {
+	if opts.ManagedBy && job.Spec.ManagedBy == nil {
+		name := v1alpha1.ManagedByName
+		job.Spec.ManagedBy = &name
+	}
+	claim(job, now, opts.SuspendFallback || !managedByUs(job))
+}
+
+// ManagedByUs reports whether the built-in Job controller has been told to
+// leave this Job alone.
+func ManagedByUs(job *batchv1.Job) bool { return job != nil && managedByUs(job) }
+
+func managedByUs(job *batchv1.Job) bool {
+	return job.Spec.ManagedBy != nil && *job.Spec.ManagedBy == v1alpha1.ManagedByName
+}
+
+func claim(job *batchv1.Job, now time.Time, forceSuspend bool) {
 	if job.Annotations == nil {
 		job.Annotations = map[string]string{}
 	}
@@ -123,8 +169,16 @@ func Claim(job *batchv1.Job, now time.Time) {
 	}
 
 	job.Spec.Template.Spec.SchedulerName = v1alpha1.SchedulerName
-	t := true
-	job.Spec.Suspend = &t
+	if forceSuspend {
+		t := true
+		job.Spec.Suspend = &t
+	} else {
+		// managedBy already stops Pods being created, so the user's own
+		// suspend intent is the only thing this field has to carry --
+		// which is the asymmetric-resume problem simply not arising.
+		want := UserWantsSuspend(job)
+		job.Spec.Suspend = &want
+	}
 }
 
 // UserWantsSuspend reads back the intent Claim stashed.
@@ -146,6 +200,14 @@ func Claimed(job *batchv1.Job) bool {
 
 // JobClaimer serves the webhook.
 type JobClaimer struct {
+	// UseManagedBy writes .spec.managedBy on CREATE so the built-in Job
+	// controller skips the Job entirely. See v1alpha1.ManagedByName.
+	UseManagedBy bool
+
+	// SuspendFallback forces .spec.suspend even under managedBy, for a
+	// cluster that might not honor it. See ClaimOptions.
+	SuspendFallback bool
+
 	Caps    translate.Capabilities
 	Decoder admission.Decoder
 	Log     logr.Logger
@@ -184,7 +246,11 @@ func (jc *JobClaimer) Handle(_ context.Context, req admission.Request) admission
 	if jc.Now != nil {
 		now = jc.Now
 	}
-	Claim(job, now())
+	ClaimWith(job, now(), ClaimOptions{
+		// Immutable, so CREATE is the only chance to set it.
+		ManagedBy:       jc.UseManagedBy && req.Operation == admissionv1.Create,
+		SuspendFallback: jc.SuspendFallback,
+	})
 
 	marshaled, err := jsonMarshal(job)
 	if err != nil {

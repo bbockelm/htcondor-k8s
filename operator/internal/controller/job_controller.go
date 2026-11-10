@@ -14,6 +14,7 @@ import (
 	"fmt"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -54,7 +55,52 @@ type JobReconciler struct {
 	MirrorStatus bool
 }
 
+// guardManagedBy catches the one way .spec.managedBy can fail quietly.
+//
+// The field is accepted by any API server that knows the schema, but it only
+// *does* anything where the JobManagedBy feature gate is on -- beta since
+// 1.32, GA since 1.35. On an older cluster, or one with the gate explicitly
+// off, the Job controller ignores it and makes Pods, and the work then runs
+// both on Kubernetes and on HTCondor. Nothing reports that; the Job simply
+// looks like it is going well in two places.
+//
+// Pods are the unambiguous evidence, because this operator never creates any.
+// One is enough: suspend the Job, which is what stops the built-in controller
+// when managedBy cannot, and say so loudly enough to be actionable.
+func (r *JobReconciler) guardManagedBy(ctx context.Context, job *batchv1.Job) error {
+	if !htcwebhook.ManagedByUs(job) {
+		return nil
+	}
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(job.Namespace),
+		client.MatchingLabels{"batch.kubernetes.io/job-name": job.Name},
+		client.Limit(1)); err != nil {
+		// Not fatal: without the list we cannot prove anything is
+		// wrong, and refusing to reconcile would strand a Job that is
+		// almost certainly fine.
+		log.FromContext(ctx).V(1).Info("could not check for pods under a managedBy Job", "error", err.Error())
+		return nil
+	}
+	if len(pods.Items) == 0 {
+		return nil
+	}
+
+	r.event(job, "Warning", "ManagedByIgnored",
+		fmt.Sprintf("this cluster created Pods for a Job with .spec.managedBy=%s, so the "+
+			"JobManagedBy feature gate is off and the work would run twice; suspending the Job",
+			v1alpha1.ManagedByName))
+	if job.Spec.Suspend == nil || !*job.Spec.Suspend {
+		t := true
+		job.Spec.Suspend = &t
+		if err := r.Update(ctx, job); err != nil {
+			return fmt.Errorf("suspending a Job whose managedBy was ignored: %w", err)
+		}
+	}
+	return nil
+}
+
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs/status,verbs=get;update;patch
 
 // Reconcile mirrors one Job.
@@ -90,6 +136,10 @@ func (r *JobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			"rejections", rs.Error())
 		r.event(&job, "Warning", "NotAdmitted", rs.Error())
 		return ctrl.Result{}, nil
+	}
+
+	if err := r.guardManagedBy(ctx, &job); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	hj, err := r.ensureHTCJob(ctx, &job, spec)

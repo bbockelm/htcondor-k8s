@@ -41,6 +41,28 @@ const (
 	// will not also try to place it.
 	SchedulerName = "htcondor"
 
+	// ManagedByName is written to a claimed Job's .spec.managedBy.
+	//
+	// This is batch/v1's own extension point for handing a Job to a
+	// controller that is not kube-controller-manager: the built-in Job
+	// controller reconciles only Jobs where the field is absent or equal
+	// to kubernetes.io/job-controller, and leaves its sync loop entirely
+	// for any other value. Kueue uses the same mechanism.
+	//
+	// It is what makes claiming a Job honest rather than a fight. Without
+	// it the only way to stop Pods being created is .spec.suspend, and
+	// .status still has a writer that wins. With it, nothing creates Pods
+	// and this operator is the status's only writer.
+	//
+	// Two constraints the API enforces: the value is a domain-prefixed
+	// path of at most 63 characters, and the field is **immutable**, so it
+	// can only be set at CREATE.
+	//
+	// Requires the JobManagedBy feature gate: beta and on by default since
+	// Kubernetes 1.32, GA and locked on since 1.35. On an older cluster the
+	// field is accepted and ignored, which is why [SuspendFallback] exists.
+	ManagedByName = "htcondor.org/job-controller"
+
 	// LabelOwnerUID lets the HTCJob for a Job be found without a field index.
 	LabelOwnerUID = "htcondor.org/owner-uid"
 )

@@ -65,3 +65,29 @@ jobs:
       - name: real-cluster checks
         # Skips cleanly when Docker is unavailable.
         run: ./hack/k3d-e2e.sh
+
+  k3s:
+    # The only check that .spec.managedBy actually stops the built-in Job
+    # controller, which is the whole argument for claiming Jobs that way.
+    # The suite skips without a container runtime, so the greps are the
+    # assertion, not decoration.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: operator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: docker is present
+        run: docker info
+      - name: managedBy against a real Job controller
+        run: |
+          go test ./test/k3s/... -count=1 -v -timeout 20m 2>&1 | tee out.txt
+          grep -q -- '--- PASS: TestManagedByStopsTheBuiltInJobController' out.txt
+          grep -q -- '--- PASS: TestManagedByIsImmutable' out.txt
+          if grep -q -- '--- SKIP' out.txt; then
+            echo "::error::the operator k3s suite skipped on CI; a skip here tests nothing"
+            exit 1
+          fi

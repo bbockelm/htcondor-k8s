@@ -264,3 +264,65 @@ func newClaimer() *JobClaimer {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+func TestClaimWithManagedBySetsTheFieldAndDoesNotForceSuspend(t *testing.T) {
+	job := translatableJob()
+	ClaimWith(job, time.Now(), ClaimOptions{ManagedBy: true})
+
+	require.NotNil(t, job.Spec.ManagedBy)
+	require.Equal(t, v1alpha1.ManagedByName, *job.Spec.ManagedBy)
+	require.True(t, Claimed(job))
+	require.True(t, ManagedByUs(job))
+	require.NotNil(t, job.Spec.Suspend)
+	require.False(t, *job.Spec.Suspend,
+		"managedBy already stops Pod creation, so suspend must carry the user's intent and nothing else")
+}
+
+// The user's own suspend survives managedBy mode, which is the asymmetric
+// resume simply not arising: the field means what the user meant.
+func TestManagedByCarriesTheUserSuspendIntent(t *testing.T) {
+	job := translatableJob()
+	yes := true
+	job.Spec.Suspend = &yes
+	ClaimWith(job, time.Now(), ClaimOptions{ManagedBy: true})
+
+	require.NotNil(t, job.Spec.Suspend)
+	require.True(t, *job.Spec.Suspend)
+}
+
+// Without managedBy the old behavior has to stand, because suspend is then
+// the only thing stopping the built-in controller.
+func TestClaimWithoutManagedByStillForcesSuspend(t *testing.T) {
+	job := translatableJob()
+	ClaimWith(job, time.Now(), ClaimOptions{SuspendFallback: true})
+
+	require.Nil(t, job.Spec.ManagedBy)
+	require.NotNil(t, job.Spec.Suspend)
+	require.True(t, *job.Spec.Suspend)
+}
+
+// The belt-and-braces mode writes both.
+func TestSuspendFallbackAppliesEvenUnderManagedBy(t *testing.T) {
+	job := translatableJob()
+	ClaimWith(job, time.Now(), ClaimOptions{ManagedBy: true, SuspendFallback: true})
+
+	require.NotNil(t, job.Spec.ManagedBy)
+	require.NotNil(t, job.Spec.Suspend)
+	require.True(t, *job.Spec.Suspend)
+}
+
+// managedBy is immutable, so a value already on the object is never
+// rewritten -- otherwise an update to a Job created before this operator
+// existed would be rejected wholesale, for a reason unrelated to the change.
+func TestExistingManagedByIsNeverOverwritten(t *testing.T) {
+	job := translatableJob()
+	other := "someone.else/controller"
+	job.Spec.ManagedBy = &other
+	ClaimWith(job, time.Now(), ClaimOptions{ManagedBy: true})
+
+	require.Equal(t, other, *job.Spec.ManagedBy)
+	require.False(t, ManagedByUs(job))
+	require.NotNil(t, job.Spec.Suspend)
+	require.True(t, *job.Spec.Suspend,
+		"a Job this operator does not manage must still be suspended, or the built-in controller runs it")
+}

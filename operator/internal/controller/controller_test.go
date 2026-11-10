@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -574,3 +575,68 @@ var errUnreachable = &unreachableError{}
 type unreachableError struct{}
 
 func (*unreachableError) Error() string { return "schedd unreachable" }
+
+// managedBy is accepted by any API server that knows the schema but only acts
+// where the JobManagedBy gate is on. Where it is off, the built-in controller
+// makes Pods and the work runs twice -- silently. Pods are the unambiguous
+// evidence, because this operator never creates one.
+func TestPodsUnderAManagedByJobSuspendItAndSayWhy(t *testing.T) {
+	job := claimedJob("ignored")
+	name := v1alpha1.ManagedByName
+	job.Spec.ManagedBy = &name
+	no := false
+	job.Spec.Suspend = &no
+
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:      "ignored-abcde",
+		Namespace: job.Namespace,
+		Labels:    map[string]string{"batch.kubernetes.io/job-name": job.Name},
+	}}
+
+	c := newClient(t, job, pod)
+	rec := record.NewFakeRecorder(10)
+	r := &JobReconciler{Client: c, Scheme: testScheme(t), Recorder: rec,
+		Caps: translate.DefaultCapabilities()}
+
+	_, err := r.Reconcile(context.Background(), reqFor(job))
+	require.NoError(t, err)
+
+	var got batchv1.Job
+	require.NoError(t, c.Get(context.Background(), reqFor(job).NamespacedName, &got))
+	require.NotNil(t, got.Spec.Suspend)
+	require.True(t, *got.Spec.Suspend,
+		"a Job whose managedBy was ignored must be suspended, or it runs in both places")
+
+	var events []string
+	for len(rec.Events) > 0 {
+		events = append(events, <-rec.Events)
+	}
+	require.Condition(t, func() bool {
+		for _, e := range events {
+			if strings.Contains(e, "ManagedByIgnored") {
+				return true
+			}
+		}
+		return false
+	}, "expected a ManagedByIgnored warning, got %v", events)
+}
+
+// The guard must not fire on the normal case, or every managedBy Job gets
+// suspended for no reason.
+func TestNoPodsMeansTheGuardStaysQuiet(t *testing.T) {
+	job := claimedJob("fine")
+	name := v1alpha1.ManagedByName
+	job.Spec.ManagedBy = &name
+	no := false
+	job.Spec.Suspend = &no
+
+	c := newClient(t, job)
+	r := &JobReconciler{Client: c, Scheme: testScheme(t), Caps: translate.DefaultCapabilities()}
+	_, err := r.Reconcile(context.Background(), reqFor(job))
+	require.NoError(t, err)
+
+	var got batchv1.Job
+	require.NoError(t, c.Get(context.Background(), reqFor(job).NamespacedName, &got))
+	require.NotNil(t, got.Spec.Suspend)
+	require.False(t, *got.Spec.Suspend)
+}

@@ -50,7 +50,7 @@ that needs both should run both.
 
 ## Status
 
-Built and tested: 114 top-level tests pass across the module, 0 skipped where
+Built and tested: 116 top-level tests pass across the module, 0 skipped where
 a container runtime is present. The node lifecycle and the pod controller are
 tested against a real `kube-apiserver` via envtest, submission against a real
 schedd, and **the central premise against a real `kube-controller-manager`**

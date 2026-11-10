@@ -48,6 +48,8 @@ func main() {
 		spoolRoot      string
 		pollInterval   time.Duration
 		mirrorStatus   bool
+		useManagedBy   bool
+		suspendBelt    bool
 		maxCPU         int64
 		maxMemoryBytes int64
 		gpuResources   string
@@ -63,8 +65,16 @@ func main() {
 	flag.StringVar(&scheddAddr, "schedd-address", "", "schedd sinful string or host:port")
 	flag.StringVar(&spoolRoot, "spool-root", "", "directory shared with the access point for per-job initialdir")
 	flag.DurationVar(&pollInterval, "poll-interval", 15*time.Second, "how often a live HTCJob is re-read from the queue")
+	flag.BoolVar(&useManagedBy, "use-managed-by", true,
+		"set .spec.managedBy on claimed Jobs so the built-in Job controller skips them "+
+			"(needs Kubernetes 1.32 or newer; see api/v1alpha1.ManagedByName)")
+	flag.BoolVar(&suspendBelt, "suspend-fallback", false,
+		"also force .spec.suspend on claimed Jobs, for a cluster that might not honor managedBy. "+
+			"Implied when -use-managed-by is false")
 	flag.BoolVar(&mirrorStatus, "mirror-job-status", true,
-		"copy HTCJob status onto the owning batch/v1 Job (contested by kube-controller-manager)")
+		"copy HTCJob status onto the owning batch/v1 Job. Safe under -use-managed-by, which "+
+			"makes this operator the only writer; without it the built-in Job controller "+
+			"contests and wins")
 	flag.Int64Var(&maxCPU, "pool-max-cpu", 0, "largest CPU count a single job may request; 0 for no local bound")
 	flag.Int64Var(&maxMemoryBytes, "pool-max-memory-bytes", 0, "largest memory request; 0 for no local bound")
 	flag.StringVar(&gpuResources, "pool-gpu-resources", "",
@@ -110,9 +120,11 @@ func main() {
 
 	mgr.GetWebhookServer().Register(htcwebhook.Path, &admission.Webhook{
 		Handler: &htcwebhook.JobClaimer{
-			Caps:    caps,
-			Decoder: admission.NewDecoder(scheme),
-			Log:     ctrl.Log.WithName("webhook").WithName("job"),
+			UseManagedBy:    useManagedBy,
+			SuspendFallback: suspendBelt || !useManagedBy,
+			Caps:            caps,
+			Decoder:         admission.NewDecoder(scheme),
+			Log:             ctrl.Log.WithName("webhook").WithName("job"),
 		},
 	})
 

@@ -260,3 +260,36 @@ go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0 object paths=./ap
 go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0 crd paths=./api/... output:crd:dir=config/crd
 go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0 rbac:roleName=htcondor-operator paths=./internal/... output:rbac:dir=config/rbac
 ```
+
+---
+
+## Addendum: `.spec.managedBy` fixes most of what this document calls injuries
+
+This document was written before `batch/v1`'s own extension point for handing
+a Job to another controller was found. `.spec.managedBy` makes the built-in
+Job controller skip a Job entirely — it is checked at three points in
+`pkg/controller/job/job_controller.go` and leaves the sync loop — and the
+`JobManagedBy` gate has been **beta-on-by-default since 1.32 and GA since
+1.35**.
+
+With it set:
+
+- **`.spec.suspend` no longer has to be commandeered.** It was only ever
+  forced to stop Pod creation; nothing creates Pods for a Job that is not
+  being reconciled. The field goes back to carrying the user's intent, so the
+  asymmetric resume described above simply does not arise.
+- **`job.status` stops being contested.** This operator becomes its only
+  legitimate writer, and the status mirror is safe to leave on.
+- **`.spec.selector`** is still defaulted after admission — that is the
+  registry, not the controller — but it is now inert, because nothing adopts
+  Pods.
+
+Constraints the API enforces: a domain-prefixed path of at most 63 characters,
+and **immutable**, so it can only be set at CREATE. That is also why claiming
+on UPDATE remains refused.
+
+`operator/test/k3s` proves the behavior against a real `kube-controller-manager`,
+with a control Job to show the cluster was working. The failure mode to know
+about is a cluster with the gate off, where the field is accepted and ignored;
+`guardManagedBy` catches it by looking for Pods — which this operator never
+creates — and suspends the Job with a `ManagedByIgnored` warning.

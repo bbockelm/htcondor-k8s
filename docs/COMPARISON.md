@@ -10,14 +10,14 @@ run.
 | | Facade | Operator | Pod interception |
 |---|---|---|---|
 | What it is | a kubectl-compatible API server over a schedd | an `HTCJob` CRD plus a webhook that claims Jobs | a virtual node that takes the Pods the Job controller makes |
-| Tests passing | 41 + 4 integration (green under `-race`) | 46 | 114 |
+| Tests passing | 41 + 4 integration (green under `-race`) | 55 | 116 |
 | Against real HTCondor | 4 tests, real `condor_master` + real `kubectl` 1.26 | 1 test, real schedd | 2 tests, real schedd |
-| Against a real API server | n/a — it *is* the API server | 7 envtest cases | 17 envtest cases, **plus 5 against a real cluster in k3s**, including `kubectl logs` through the API server proxy |
+| Against a real API server | n/a — it *is* the API server | 7 envtest cases, **plus 2 against a real Job controller in k3s** | 17 envtest cases, **plus 5 against a real cluster in k3s**, including `kubectl logs` through the API server proxy |
 | Verified by hand | `kubectl apply/get/get -o wide/describe/logs/delete`; a job ran on a startd and `kubectl logs` returned its stdout | CRD structurally rejects 10 unsupported fields; webhook patches over TLS; suspend/resume; finalizer | binding subresource accepted and a raw `nodeName` write refused; deletion removes the job and the object |
 
 Counts are top-level test functions, counted the same way for each; there are
 116 subtests besides, and no test skips where its dependencies are present.
-Across the whole repo: **246 passing, 0 skipped.**
+Across the whole repo: **257 passing, 0 skipped.**
 
 None of them is a sketch. The interesting result is what each one's failure
 modes turned out to be, because they are not symmetrical — and in two cases the
@@ -99,6 +99,31 @@ Setting it would have dissolved two of the three injuries outright:
 This is the extension point Kueue and MultiKueue use. **The operator was not
 wrong to claim Jobs; it was wrong about how.**
 
+### It is implemented now, and proven against a real Job controller
+
+`operator/test/k3s` creates a claimed Job with `managedBy` set and an
+otherwise identical control Job without it, against a real control plane. The
+control gets Pods; the claimed one gets **none**, and **nothing writes to its
+status** — which is injury #2 disappearing rather than being worked around.
+Removing the field from the claim makes the Job controller create a Pod and
+the test fail by name.
+
+The webhook writes it only at CREATE, because the field is immutable (also
+pinned by a test, since the API server is the thing enforcing it), and only
+when it is still empty — rewriting another controller's value would have the
+API server reject an unrelated user update wholesale.
+
+With `managedBy` set, `.spec.suspend` goes back to meaning what the user
+meant, and the status mirror is safe to leave on.
+
+**The one way it fails quietly** is a cluster where the `JobManagedBy` gate is
+off: the field is accepted and ignored, the Job controller makes Pods, and the
+work runs in both places with nothing reporting it. The controller watches for
+that — Pods under a `managedBy` Job are unambiguous, since this operator never
+creates one — and suspends the Job with a `ManagedByIgnored` warning.
+`-suspend-fallback` forces the old belt for a site that would rather pay the
+asymmetric resume than risk it.
+
 > **Three ways to own a `batch/v1` Job, not two.** `managedBy` keeps the
 > one-object-per-Job scaling that makes HTCondor worth using and gives up every
 > Pod-level affordance. Pod interception gives up the scaling and gets all of
@@ -153,10 +178,11 @@ field, one safe value, and nothing ever needs the user's intent read back.
 
 ## My read
 
-**For the Job-shaped case, try `managedBy` before anything else.** It is the
-supported answer, it is one immutable field set at admission, and it keeps the
-scaling that makes HTCondor the right backend. Nothing in this repo implements
-it yet — that is the clearest next piece of work, and it is small.
+**For the Job-shaped case, `managedBy` is the answer.** It is the supported
+mechanism, it is one immutable field set at admission, it keeps the one-object-
+per-Job scaling that makes HTCondor the right backend, and it is now
+implemented and proven against a real Job controller. It is on by default
+(`-use-managed-by`).
 
 **Take the HTCJob CRD plus its controller forward** as the durable core. The
 type system does the refusing, state survives restarts, and the Kubernetes
