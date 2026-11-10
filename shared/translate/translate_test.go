@@ -466,3 +466,21 @@ func TestJobStatusEmitsTheInterimTerminalConditions(t *testing.T) {
 	}
 	assert.Equal(t, []batchv1.JobConditionType{batchv1.JobFailureTarget, batchv1.JobFailed}, types)
 }
+
+func TestMergeOutputPointsBothStreamsAtOneFile(t *testing.T) {
+	spec := goodPod()
+	id := Identity{Name: "p", Namespace: "n", UID: "u"}
+
+	separate, err := PodToSubmit(spec, id, SubmitOptions{Caps: DefaultCapabilities()})
+	require.NoError(t, err)
+	assert.Contains(t, separate, "output = stdout")
+	assert.Contains(t, separate, "error = stderr",
+		"the default must keep the two streams apart; the facade serves them separately")
+
+	merged, err := PodToSubmit(spec, id, SubmitOptions{Caps: DefaultCapabilities(), MergeOutput: true})
+	require.NoError(t, err)
+	assert.Contains(t, merged, "output = stdout")
+	assert.Contains(t, merged, "error = stdout")
+	assert.NotContains(t, merged, "error = stderr",
+		"a merged job must not also write a separate stderr file")
+}

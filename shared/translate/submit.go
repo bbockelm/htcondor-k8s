@@ -90,6 +90,21 @@ type SubmitOptions struct {
 	// wall-clock runtime.
 	ActiveDeadlineSeconds int64
 
+	// MergeOutput points error at the same file as output, so the job's
+	// two streams interleave into one.
+	//
+	// This is what a container actually looks like: a Pod has one log per
+	// container, stdout and stderr already merged, and `kubectl logs` has
+	// no way to ask for one of them. Serving them separately means either
+	// picking one and hiding the other, or inventing a parameter no
+	// Kubernetes client will send. HTCondor writes two files by default,
+	// and there is no honest way to interleave them afterwards -- the
+	// ordering is gone by then.
+	//
+	// It is off by default because the facade exposes the two streams
+	// separately and would lose that by merging.
+	MergeOutput bool
+
 	// Suspend submits the job on hold, matching a batch/v1 Job with
 	// .spec.suspend: true.
 	Suspend bool
@@ -165,7 +180,11 @@ func PodToSubmit(spec *corev1.PodSpec, id Identity, opts SubmitOptions) (string,
 		w("initialdir = %s", escapeSubmitMacros(opts.IWD))
 	}
 	w("output = stdout")
-	w("error = stderr")
+	if opts.MergeOutput {
+		w("error = stdout")
+	} else {
+		w("error = stderr")
+	}
 	w("log = job.log")
 	w("should_transfer_files = YES")
 	w("when_to_transfer_output = ON_EXIT")

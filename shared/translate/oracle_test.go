@@ -509,3 +509,19 @@ func TestOracleNoCommandInheritsTheImageEntrypoint(t *testing.T) {
 	assert.Equal(t, []string{"--flag", "value"}, decodeV2(adString(t, ad, "Arguments")),
 		"args without a command still reach the entrypoint")
 }
+
+// A container has one log. This asserts the merge survives condor_submit
+// rather than only existing in our own text, because "Out" and "Err" are
+// separate attributes in the job ad and nothing else would catch them
+// disagreeing.
+func TestOracleMergedOutputReachesTheAdAsOneFile(t *testing.T) {
+	spec := goodPod()
+	text, err := PodToSubmit(spec, Identity{Name: "p", Namespace: "n", UID: "u"},
+		SubmitOptions{Caps: DefaultCapabilities(), MergeOutput: true})
+	require.NoError(t, err)
+
+	ad := dryRun(t, text)
+	assert.Equal(t, "stdout", adString(t, ad, "Out"))
+	assert.Equal(t, "stdout", adString(t, ad, "Err"),
+		"merged output means Err names the same file as Out")
+}
