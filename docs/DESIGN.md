@@ -132,6 +132,33 @@ flip the default.
 Signalled exits report `128+signal` in the container status, matching what
 Kubernetes does, so `kubectl describe pod` reads the way people expect.
 
+## The submit files are checked against real `condor_submit`
+
+`shared/translate/oracle_test.go` renders a Pod, hands the text to
+`condor_submit -dry-run`, and asserts on the job ad that actually comes back.
+The rest of the suite checks our translation against our own reading of the
+submit language, which is exactly the sort of agreement that can be unanimously
+wrong. These tests skip when `condor_submit` is not on `PATH`, so the suite
+stays green on a machine without HTCondor.
+
+It paid for itself immediately, finding a bug no amount of unit testing against
+our own formatter would have caught: **an apostrophe in an argument or
+environment value was being eaten.** `it's` arrived at the job as `its`. The
+rule is that a doubled single quote is a literal one *only inside* a
+single-quoted region; outside one, `''` opens and immediately closes an empty
+region and disappears. A word containing an apostrophe now gets quoted as a
+whole, and the oracle shows `condor_submit`'s own canonical encoding of `it's`
+is `it''''s`.
+
+It also corrected two attribute names I had guessed — `max_retries` produces
+`JobMaxRetries` and `JobSuccessExitCode`, not `MaxRetries` and
+`SuccessExitCode` — and confirmed that `+K8sPodSpec` survives the round trip
+with embedded quotes, backslashes, newlines and tabs in it.
+
+Worth considering whether this pattern should be a fuzzer rather than a table:
+generate admitted Pods, assert the ad round-trips. The argument-quoting bug is
+exactly the shape that random input finds and examples miss.
+
 ## Known gaps in the shared layer
 
 - **`container.command` is required.** Real `condor_submit` falls back to the
