@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/PelicanPlatform/classad/classad"
-	htcondor "github.com/bbockelm/golang-htcondor"
+	htcondor "github.com/htcondor/golang-htcondor"
 )
 
 // Fake is an in-memory job queue.
