@@ -3,10 +3,10 @@ module github.com/bbockelm/htcondor-k8s/virtualnode
 go 1.26.0
 
 require (
-	github.com/PelicanPlatform/classad v0.38.0
-	github.com/bbockelm/golang-htcondor v0.22.1
+	github.com/PelicanPlatform/classad v0.38.3
 	github.com/bbockelm/htcondor-k8s/shared v0.0.0
 	github.com/go-logr/logr v1.4.2
+	github.com/htcondor/golang-htcondor v0.25.0
 	github.com/stretchr/testify v1.12.1
 	k8s.io/api v0.34.1
 	k8s.io/apimachinery v0.34.1
@@ -15,7 +15,7 @@ require (
 )
 
 require (
-	github.com/bbockelm/cedar v0.7.12 // indirect
+	github.com/bbockelm/cedar v0.7.15 // indirect
 	github.com/bbockelm/gosssd v0.0.4 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -58,13 +58,13 @@ require (
 	go.uber.org/zap v1.27.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/crypto v0.59.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/oauth2 v0.27.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/term v0.47.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/term v0.48.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect
 	google.golang.org/protobuf v1.36.5 // indirect

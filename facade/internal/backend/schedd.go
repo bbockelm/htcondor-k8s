@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
-	htcondor "github.com/bbockelm/golang-htcondor"
+	htcondor "github.com/htcondor/golang-htcondor"
 )
 
 // Schedd is the real backend: a live HTCondor access point.

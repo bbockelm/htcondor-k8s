@@ -20,7 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	htcondor "github.com/bbockelm/golang-htcondor"
+	htcondor "github.com/htcondor/golang-htcondor"
 
 	"github.com/bbockelm/htcondor-k8s/operator/api/v1alpha1"
 	"github.com/bbockelm/htcondor-k8s/operator/internal/condor"

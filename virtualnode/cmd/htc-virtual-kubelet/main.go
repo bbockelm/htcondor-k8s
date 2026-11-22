@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	htcondor "github.com/bbockelm/golang-htcondor"
+	htcondor "github.com/htcondor/golang-htcondor"
 
 	"github.com/bbockelm/htcondor-k8s/shared/translate"
 	"github.com/bbockelm/htcondor-k8s/virtualnode/api"

@@ -1,6 +1,6 @@
 package main
 
-import htcondor "github.com/bbockelm/golang-htcondor"
+import htcondor "github.com/htcondor/golang-htcondor"
 
 // newDirectSchedd skips the collector. An operator who already has the
 // schedd's sinful string should not have to run a collector query to use it,

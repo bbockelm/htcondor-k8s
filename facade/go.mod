@@ -3,15 +3,15 @@ module github.com/bbockelm/htcondor-k8s/facade
 go 1.26.0
 
 require (
-	github.com/PelicanPlatform/classad v0.38.2
-	github.com/PelicanPlatform/classad/db v0.38.2
-	github.com/PelicanPlatform/classad/dbrpc v0.38.2
-	github.com/bbockelm/cedar v0.7.12
-	github.com/bbockelm/golang-htcondor v0.22.1
+	github.com/PelicanPlatform/classad v0.43.0
+	github.com/PelicanPlatform/classad/db v0.43.0
+	github.com/PelicanPlatform/classad/dbrpc v0.43.0
+	github.com/bbockelm/cedar v0.7.15
 	github.com/bbockelm/htcondor-k8s/shared v0.0.0
-	github.com/bbockelm/htcondordb v0.26.0
 	github.com/google/gnostic-models v0.7.0
 	github.com/google/uuid v1.6.0
+	github.com/htcondor/golang-htcondor v0.25.0
+	github.com/htcondor/htcondordb v0.28.0
 	google.golang.org/protobuf v1.36.12
 	k8s.io/api v0.34.1
 	k8s.io/apimachinery v0.34.1
@@ -19,7 +19,7 @@ require (
 )
 
 require (
-	github.com/PelicanPlatform/classad/collections v0.38.2 // indirect
+	github.com/PelicanPlatform/classad/collections v0.43.0 // indirect
 	github.com/RoaringBitmap/roaring/v2 v2.29.0 // indirect
 	github.com/bbockelm/gosssd v0.0.4 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
@@ -43,7 +43,7 @@ require (
 	github.com/jcmturner/rpc/v2 v2.0.3 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.20.1 // indirect
+	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
@@ -54,12 +54,12 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/crypto v0.59.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/oauth2 v0.27.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/term v0.47.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/term v0.48.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect

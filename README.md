@@ -12,7 +12,7 @@ than on whose Pod-to-job mapping happened to be better.
 | [`virtualnode/`](virtualnode/) | A virtual node. The built-in Job controller runs untouched and makes real Pods; this takes those Pods, runs them on HTCondor, and lets the Job controller derive Job status from the Pod status it writes |
 
 All three sit in front of an HTCondor access point and submit through
-[golang-htcondor](https://github.com/bbockelm/golang-htcondor).
+[golang-htcondor](https://github.com/htcondor/golang-htcondor).
 
 **Start with [docs/COMPARISON.md](docs/COMPARISON.md)** — which approach, and
 why. Then [docs/DESIGN.md](docs/DESIGN.md) for the shared layer (including a
